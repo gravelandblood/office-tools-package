@@ -1,4 +1,4 @@
-# WPS / Office Automation Research
+﻿# WPS / Office Automation Research
 
 Date: 2026-05-30
 
@@ -138,7 +138,7 @@ Validation XML:
 
 ## Verified: WPS Member PDF to Word Through UIA
 
-The real WPS right-click shell verb for "convert to Word" (`转为Word`) launches:
+The real WPS right-click shell verb for "convert to Word" (`杞负Word`) launches:
 
 ```text
 wpscloudsvr.exe Run /InstanceId:WpsCloudSvr ... /app_id=kpdf2wordv2 /app_params=<base64> /src=public_rclickmenu
@@ -150,29 +150,26 @@ Then it launches:
 wps.exe Run /InstanceId=kpdf2wordv2 ... /action=ConvertToWord /file=<pdf>
 ```
 
-The WPS PDF conversion window title is `WPS PDF转换`.
+The WPS PDF conversion window title is `WPS PDF杞崲`.
 
 UI Automation exposes useful controls, including:
 
-- navigation items such as `转为Word`, `转为Excel`, `转为PPT`
+- navigation items such as `杞负Word`, `杞负Excel`, `杞负PPT`
 - output settings
-- a button containing the text `开始转换`
-- completion dialog `操作完成`
+- a button containing the text `寮€濮嬭浆鎹
+- completion dialog `鎿嶄綔瀹屾垚`
 
-UIA can invoke the `开始转换` button. The scanned PDF converted successfully to:
+UIA can invoke the `寮€濮嬭浆鎹 button. The scanned PDF converted successfully to:
 
 ```text
-C:\Code\test\pdfreadtest\工商底档-2023.10.26变更登记.docx
+<sample-dir>\sample.docx
 ```
 
 The output `.docx` contains OCR text, not only images. Extracted text begins with
 the expected registration notice content:
 
 ```text
-登记通知书
-(武新市监)登字〔2023〕第200758号
-武汉国科光领半导体科技有限公司：
-```
+鐧昏閫氱煡涔?(姝︽柊甯傜洃)鐧诲瓧銆?023銆曠200758鍙?姝︽眽鍥界鍏夐鍗婂浣撶鎶€鏈夐檺鍏徃锛?```
 
 Text extraction found roughly 290k text characters.
 
@@ -239,3 +236,4 @@ Use `OAAssist.ShellExecute` or NativeX only when needed:
   enabled add-ins; `WpsClient` avoids this by starting a separate client.
 - How much of WPS review/comment/accept-change behavior is better handled by COM
   versus JSAPI in practice.
+

@@ -1,6 +1,8 @@
 {
   "name": "@office-tools/backend-officecli",
   "version": "0.1.0",
+  "license": "MIT",
+  "description": "Planned OfficeCLI adapter for office-tools-package.",
   "type": "module",
   "main": "src/index.js",
   "exports": {

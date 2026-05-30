@@ -1,15 +1,14 @@
 $ErrorActionPreference = "Stop"
 
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PdfPath = Get-ChildItem -LiteralPath "C:\Code\test\pdfreadtest" -Filter "*.pdf" |
-  Where-Object { $_.Name -like "*2023.10.26*" } |
-  Select-Object -First 1 -ExpandProperty FullName
+$PdfPath = $env:OFFICE_TOOLS_SAMPLE_PDF
 if (-not $PdfPath) {
-  throw "Test PDF was not found under C:\Code\test\pdfreadtest"
+  throw "Set OFFICE_TOOLS_SAMPLE_PDF to a local PDF path before running this prototype."
 }
+
 $WpsExe = (Get-Process wps -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path)
 if (-not $WpsExe) {
-  $WpsExe = "C:\Users\十九\AppData\Local\Kingsoft\WPS Office\12.1.0.26375\office6\wps.exe"
+  $WpsExe = Join-Path $env:LOCALAPPDATA "Kingsoft\WPS Office\office6\wps.exe"
 }
 
 $Framework = Join-Path (Split-Path $WpsExe -Parent) "addons\kappessframework\kappessframework.dll"

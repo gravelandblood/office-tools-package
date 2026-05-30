@@ -1,6 +1,8 @@
 {
   "name": "@office-tools/backend-wps-jsapi",
   "version": "0.1.0",
+  "license": "MIT",
+  "description": "Planned WPS JSAPI adapter for office-tools-package.",
   "type": "module",
   "main": "src/index.js",
   "exports": {

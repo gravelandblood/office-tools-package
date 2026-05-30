@@ -15,13 +15,11 @@ if (-not $VerbPattern) {
 }
 
 if (-not $InputPdf) {
-  $InputPdf = Get-ChildItem -LiteralPath "C:\Code\test\pdfreadtest" -Filter "*.pdf" |
-    Where-Object { $_.Name -like "*2023.10.26*" } |
-    Select-Object -First 1 -ExpandProperty FullName
+  $InputPdf = $env:OFFICE_TOOLS_SAMPLE_PDF
 }
 
 if (-not $InputPdf) {
-  throw "PDF not found"
+  throw "Pass -InputPdf or set OFFICE_TOOLS_SAMPLE_PDF to a local PDF path."
 }
 
 $pdf = (Resolve-Path -LiteralPath $InputPdf).Path

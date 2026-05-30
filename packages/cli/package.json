@@ -1,6 +1,8 @@
 {
   "name": "@office-tools/cli",
   "version": "0.1.0",
+  "license": "MIT",
+  "description": "CLI for the office-tools-package automation toolkit.",
   "type": "module",
   "bin": {
     "office-tools": "bin/office-tools.js"

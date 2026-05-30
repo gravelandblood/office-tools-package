@@ -1,6 +1,8 @@
 {
   "name": "@office-tools/backend-wps-uia",
   "version": "0.1.0",
+  "license": "MIT",
+  "description": "Windows WPS UI Automation backend for office-tools-package.",
   "type": "module",
   "main": "src/index.js",
   "exports": {

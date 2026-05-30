@@ -2,6 +2,8 @@
   "name": "office-tools-package-workspace",
   "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "description": "Agent-friendly Office and WPS automation toolkit prototype.",
   "type": "module",
   "workspaces": [
     "packages/*"

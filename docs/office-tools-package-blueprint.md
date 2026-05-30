@@ -77,17 +77,17 @@ PDF file
   -> .docx output in the source PDF directory
 ```
 
-Observed output:
+Observed output in the local prototype:
 
-- Source PDF: `C:\Code\test\pdfreadtest\工商底档-2023.10.26变更登记.pdf`
-- Output DOCX: `C:\Code\test\pdfreadtest\工商底档-2023.10.26变更登记.docx`
+- Source PDF: `<sample-dir>\sample.pdf`
+- Output DOCX: `<sample-dir>\sample.docx`
 - The output contains OCR text, not only images.
 
 Prototype command:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\codex-bridge-tools\ConvertPdfToWord.ps1 `
-  -InputPdf "C:\Code\test\pdfreadtest\工商底档-2023.10.26变更登记.pdf"
+  -InputPdf "<sample-dir>\sample.pdf"
 ```
 
 ## Proposed CLI Shape
