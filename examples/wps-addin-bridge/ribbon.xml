@@ -1,0 +1,11 @@
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="OnAddinLoad">
+  <ribbon startFromScratch="false">
+    <tabs>
+      <tab id="codexBridgeTab" label="Codex Bridge">
+        <group id="codexBridgeGroup" label="Bridge">
+          <button id="btnCodexPing" label="Ping" onAction="OnAction" visible="true" size="large"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>

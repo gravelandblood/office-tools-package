@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jsplugins>
+  <jspluginonline
+    name="CodexBridge"
+    type="wps"
+    url="http://127.0.0.1:3889/"
+    debug=""
+    enable="enable_dev"
+    install="null" />
+</jsplugins>

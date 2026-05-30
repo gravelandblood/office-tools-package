@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Codex Bridge Invoke</title>
+    <script src="./package/wpsjsrpcsdk.js"></script>
+  </head>
+  <body>
+    <pre id="out">ready</pre>
+    <script>
+      function write(value) {
+        document.getElementById("out").textContent =
+          typeof value === "string" ? value : JSON.stringify(value, null, 2);
+      }
+
+      function invoke(functionName, param, showToFront, jsPluginsXml) {
+        WpsInvoke.InvokeAsHttp(
+          WpsInvoke.ClientType.wps,
+          "CodexBridge",
+          functionName,
+          JSON.stringify(param || {}),
+          function (result) {
+            write(result);
+          },
+          !!showToFront,
+          jsPluginsXml || ""
+        );
+      }
+
+      window.codexBridge = {
+        clientPing: function () {
+          window.codexBridgeClient = new WpsClient(WpsInvoke.ClientType.wps);
+          window.codexBridgeClient.jsPluginsXml = "http://127.0.0.1:48990/jsplugins.xml";
+          var client = window.codexBridgeClient;
+          client.StartWpsInSilentMode("CodexBridge", function (startResult) {
+            if (startResult.status !== 0) {
+              write({ step: "StartWpsInSilentMode", result: startResult });
+              return;
+            }
+            client.InvokeAsHttp(
+              "CodexBridge",
+              "CodexBridge_Ping",
+              JSON.stringify({ from: "WpsClient" }),
+              function (invokeResult) {
+                write({ step: "client.InvokeAsHttp", result: invokeResult });
+              },
+              true
+            );
+          });
+        },
+        clientInvoke: function (functionName, param) {
+          var client = new WpsClient(WpsInvoke.ClientType.wps);
+          client.jsPluginsXml = "http://127.0.0.1:48990/jsplugins.xml";
+          client.StartWpsInSilentMode("CodexBridge", function (startResult) {
+            if (startResult.status !== 0) {
+              write({ step: "StartWpsInSilentMode", result: startResult });
+              return;
+            }
+            client.InvokeAsHttp(
+              "CodexBridge",
+              functionName,
+              JSON.stringify(param || {}),
+              function (invokeResult) {
+                write({ step: "client.InvokeAsHttp", result: invokeResult });
+              },
+              true
+            );
+          });
+        },
+        configs: function () {
+          WpsAddonMgr.getAllConfig(function (result) {
+            write(result);
+          });
+        },
+        verify: function () {
+          WpsAddonMgr.verifyStatus({
+            name: "CodexBridge",
+            url: "http://127.0.0.1:3889/",
+            addonType: "wps",
+            online: "true",
+            version: "0.1.0"
+          }, function (result) {
+            write(result);
+          });
+        },
+        enable: function () {
+          WpsAddonMgr.enable({
+            name: "CodexBridge",
+            url: "http://127.0.0.1:3889/",
+            addonType: "wps",
+            online: "true",
+            version: "0.1.0"
+          }, function (result) {
+            write(result);
+          });
+        },
+        ping: function () {
+          invoke("CodexBridge_Ping", { from: "invoke.html" }, true, "http://127.0.0.1:48990/jsplugins.xml");
+        },
+        activeDocument: function () {
+          invoke("CodexBridge_GetActiveDocument", { from: "invoke.html" }, true);
+        },
+        openDocument: function (filePath) {
+          invoke("CodexBridge_OpenDocument", { filePath: filePath }, true);
+        },
+        launchPdfConvert: function (filePath) {
+          var context = window.codexBridgeContext || {};
+          invoke("CodexBridge_LaunchPdfConvert", {
+            filePath: filePath || context.pdfPath,
+            wpsExe: context.wpsExe,
+            appFramework: context.appFramework
+          }, true);
+        }
+      };
+
+      window.codexBridge.ping();
+    </script>
+  </body>
+</html>

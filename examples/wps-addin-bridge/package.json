@@ -1,0 +1,15 @@
+{
+  "name": "CodexBridge",
+  "addonType": "wps",
+  "online": "true",
+  "url": "http://127.0.0.1:3889/",
+  "version": "0.1.0",
+  "private": true,
+  "addonType": "wps",
+  "scripts": {
+    "debug": "wpsjs debug"
+  },
+  "devDependencies": {
+    "wpsjs": "2.2.3"
+  }
+}
