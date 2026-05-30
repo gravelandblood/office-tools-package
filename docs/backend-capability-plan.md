@@ -107,31 +107,20 @@ UIA requirements:
 Current command:
 
 ```bash
-office-tools pdf to-word input.pdf --backend wps-uia
+office-tools pdf to-word input.pdf --out output.docx --backend wps-uia
 ```
 
 Implemented options:
 
 | Option | Meaning |
 |---|---|
-| `--output <path>` | Move the generated DOCX to a caller-chosen path |
+| `--out <path>` | Exact output DOCX path |
 | `--timeout <seconds>` | Wait for conversion output |
-| `--launch-mode shell` | Use the registered Windows shell verb |
-| `--launch-mode native` | Start `wps.exe Run ... /appId=kpdf2wordv2` directly |
-| `--no-click` | Launch the UI but do not invoke the start button |
+| `--cleanup <auto|always|never>` | Cleanup policy for WPS windows |
 | `--overwrite` | Replace existing target output |
-| `--preferred-verb <text>` | Prefer a specific shell verb, repeatable |
-| `--wps-exe <path>` | Explicit WPS executable for native launch |
-| `--app-framework <path>` | Explicit `kappessframework.dll` for native launch |
-| `--instance-id <value>` | WPS runner instance id |
-| `--app-id <value>` | WPS runner app id |
-| `--app-name <value>` | WPS runner app name |
-| `--window-size <value>` | WPS runner window size |
-| `--src <value>` | Source marker for the WPS runner |
-| `--switchskin <number>` | WPS runner skin switch flag |
-| `--action <value>` | WPS runner action, default `ConvertToWord` |
-| `--runner-param <key=value>` | Extra WPS runner `/key=value`, repeatable |
-| `--runner-arg <value>` | Raw extra WPS runner argument, repeatable |
+| `--verbose` | Include diagnostics such as staging paths |
+
+Internal launcher options live under `office-tools wps-uia raw pdf-converter`.
 
 Parameter discovery still needed:
 

@@ -39,22 +39,29 @@ node packages/cli/bin/office-tools.js capabilities
 使用 WPS UIA 后端转换 PDF：
 
 ```powershell
-node packages/cli/bin/office-tools.js pdf to-word C:\path\input.pdf --backend wps-uia
+node packages/cli/bin/office-tools.js pdf to-word C:\path\input.pdf --out C:\path\output.docx
 ```
 
 常用参数：
 
 ```powershell
 node packages/cli/bin/office-tools.js pdf to-word C:\path\input.pdf `
-  --output C:\path\output.docx `
-  --launch-mode shell `
+  --out C:\path\output.docx `
   --timeout 240
 ```
 
 默认情况下，转换完成后会清理本次任务打开的 WPS 窗口、转换窗口和自动打开的文档页，避免影响下一次自动化任务。调试 WPS UI 时可以使用：
 
 ```powershell
-node packages/cli/bin/office-tools.js pdf to-word C:\path\input.pdf --no-cleanup
+node packages/cli/bin/office-tools.js wps-uia raw pdf-converter C:\path\input.pdf --no-cleanup
+```
+
+WPS UIA 探索/诊断命令：
+
+```powershell
+node packages/cli/bin/office-tools.js wps-uia env
+node packages/cli/bin/office-tools.js wps-uia verbs C:\path\input.pdf
+node packages/cli/bin/office-tools.js wps-uia windows
 ```
 
 ## 启动模式

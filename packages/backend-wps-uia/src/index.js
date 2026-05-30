@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -37,9 +39,33 @@ function normalizePowerShellError(stderr, stdout, fallbackCode) {
   return error;
 }
 
-export function convertPdfToWord(inputPdf, options = {}) {
+function runPowerShell(args, { windowsHide = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("powershell.exe", args, { windowsHide });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(normalizePowerShellError(stderr, stdout, code));
+        return;
+      }
+
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+async function runConvertScript(inputPdf, options = {}) {
   if (!inputPdf) {
-    return Promise.reject(new Error("inputPdf is required"));
+    throw new Error("inputPdf is required");
   }
 
   const script = path.join(scriptDir, "ConvertPdfToWord.ps1");
@@ -90,35 +116,198 @@ export function convertPdfToWord(inputPdf, options = {}) {
   pushFlag(args, "-Overwrite", options.overwrite);
   pushFlag(args, "-NoCleanup", options.noCleanup);
 
-  return new Promise((resolve, reject) => {
-    const child = spawn("powershell.exe", args, {
-      windowsHide: false
-    });
+  const { stdout, stderr } = await runPowerShell(args, { windowsHide: false });
+  try {
+    return parseJsonLine(stdout);
+  } catch (error) {
+    error.stdout = stdout;
+    error.stderr = stderr;
+    throw error;
+  }
+}
 
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(normalizePowerShellError(stderr, stdout, code));
-        return;
-      }
+function normalizeCleanupMode(mode) {
+  if (!mode || mode === "auto" || mode === "always") return false;
+  if (mode === "never") return true;
+  throw new Error(`Unsupported cleanup mode: ${mode}`);
+}
 
-      try {
-        resolve(parseJsonLine(stdout));
-      } catch (error) {
-        error.stdout = stdout;
-        error.stderr = stderr;
-        reject(error);
+function toProductPdfToWordResult(result, options = {}, overrides = {}) {
+  const product = {
+    ok: result.ok,
+    command: "pdf.toWord",
+    backend: result.backend,
+    input: overrides.input || result.input,
+    output: overrides.output || result.output,
+    length: result.length,
+    lastWriteTime: result.lastWriteTime,
+    events: result.cleanup || []
+  };
+
+  if (options.verbose) {
+    product.diagnostics = {
+      launchMode: result.launchMode,
+      action: result.action,
+      shellVerb: result.shellVerb,
+      runner: result.runner || undefined,
+      staging: overrides.staging
+    };
+  }
+
+  return product;
+}
+
+export async function convertPdfToWord(inputPdf, options = {}) {
+  const outPath = options.outPath || options.outputPath;
+  const cleanupNever = options.noCleanup || normalizeCleanupMode(options.cleanup);
+  const baseOptions = {
+    timeoutSeconds: options.timeoutSeconds,
+    overwrite: options.overwrite,
+    noCleanup: cleanupNever,
+    cleanupSeconds: options.cleanupSeconds,
+    launchMode: options.launchMode || "shell",
+    preferredVerbs: options.preferredVerbs
+  };
+
+  if (!outPath) {
+    const result = await runConvertScript(inputPdf, baseOptions);
+    return toProductPdfToWordResult(result, options);
+  }
+
+  const resolvedInput = path.resolve(inputPdf);
+  const resolvedOut = path.resolve(outPath);
+  if (path.extname(resolvedOut).toLowerCase() !== ".docx") {
+    throw new Error(`--out must end with .docx for pdf to-word: ${resolvedOut}`);
+  }
+
+  try {
+    await fs.access(resolvedOut);
+    if (!options.overwrite) {
+      throw new Error(`Output already exists. Pass --overwrite to replace it: ${resolvedOut}`);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "office-tools-pdf2word-"));
+  const stagedPdf = path.join(stagingDir, `${path.basename(resolvedOut, ".docx")}.pdf`);
+  try {
+    await fs.copyFile(resolvedInput, stagedPdf);
+    await fs.mkdir(path.dirname(resolvedOut), { recursive: true });
+    const result = await runConvertScript(stagedPdf, {
+      ...baseOptions,
+      outputPath: resolvedOut,
+      overwrite: options.overwrite
+    });
+    return toProductPdfToWordResult(result, options, {
+      input: resolvedInput,
+      output: resolvedOut,
+      staging: {
+        dir: stagingDir,
+        input: stagedPdf
       }
     });
-  });
+  } finally {
+    try {
+      await fs.rm(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+    } catch (error) {
+      if (options.verbose) {
+        process.stderr.write(`warning: unable to remove staging directory ${stagingDir}: ${error.message}\n`);
+      }
+    }
+  }
+}
+
+export function convertPdfToWordRaw(inputPdf, options = {}) {
+  return runConvertScript(inputPdf, options);
+}
+
+async function runJsonCommand(command) {
+  const utf8Command = `
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
+${command}
+`;
+  const { stdout } = await runPowerShell([
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-Command",
+    utf8Command
+  ], { windowsHide: true });
+  return parseJsonLine(stdout);
+}
+
+export function getEnvironment() {
+  const command = `
+$root = Join-Path $env:LOCALAPPDATA 'Kingsoft\\WPS Office'
+$versions = @()
+if (Test-Path -LiteralPath $root) {
+  $versions = @(Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'office6\\wps.exe') } |
+    Sort-Object Name -Descending |
+    ForEach-Object {
+      $office6 = Join-Path $_.FullName 'office6'
+      [pscustomobject]@{
+        version = $_.Name
+        office6 = $office6
+        wps = Join-Path $office6 'wps.exe'
+        wpspdf = Join-Path $office6 'wpspdf.exe'
+        wpscloudsvr = Join-Path $office6 'wpscloudsvr.exe'
+      }
+    })
+}
+[pscustomobject]@{
+  ok = $true
+  backend = 'wps-uia'
+  platform = $env:OS
+  localAppData = $env:LOCALAPPDATA
+  versions = $versions
+} | ConvertTo-Json -Compress -Depth 6
+`;
+  return runJsonCommand(command);
+}
+
+export function listPdfVerbs(inputPdf) {
+  const escaped = String(inputPdf).replace(/'/g, "''");
+  const command = `
+$pdf = (Resolve-Path -LiteralPath '${escaped}').Path
+$shell = New-Object -ComObject Shell.Application
+$folder = $shell.Namespace((Split-Path $pdf -Parent))
+$item = $folder.ParseName((Split-Path $pdf -Leaf))
+$verbs = @($item.Verbs()) | ForEach-Object { ($_.Name -replace '&','').Trim() } | Where-Object { $_ }
+[pscustomobject]@{
+  ok = $true
+  backend = 'wps-uia'
+  input = $pdf
+  verbs = @($verbs)
+} | ConvertTo-Json -Compress -Depth 4
+`;
+  return runJsonCommand(command);
+}
+
+export function listWindows() {
+  const command = `
+Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes
+$root=[System.Windows.Automation.AutomationElement]::RootElement
+$wins=$root.FindAll([System.Windows.Automation.TreeScope]::Children,[System.Windows.Automation.Condition]::TrueCondition)
+$items = @($wins | ForEach-Object {
+  try {
+    [pscustomobject]@{
+      name=$_.Current.Name
+      className=$_.Current.ClassName
+      processId=$_.Current.ProcessId
+      controlType=$_.Current.ControlType.ProgrammaticName
+    }
+  } catch {}
+})
+[pscustomobject]@{
+  ok = $true
+  backend = 'wps-uia'
+  windows = $items
+} | ConvertTo-Json -Compress -Depth 5
+`;
+  return runJsonCommand(command);
 }
 
 export const capabilities = {
@@ -127,31 +316,30 @@ export const capabilities = {
     {
       id: "pdf.toWord",
       description: "Convert a PDF to DOCX through the WPS PDF conversion desktop UI.",
-      launchModes: ["shell", "native", "cloud"],
       options: [
-        "outputPath",
+        "outPath",
         "timeoutSeconds",
-        "noClick",
-        "noCleanup",
+        "cleanup",
         "cleanupSeconds",
         "overwrite",
-        "preferredVerbs",
-        "wpsExe",
-        "cloudExe",
-        "appFramework",
-        "instanceId",
-        "appId",
-        "appName",
-        "windowSize",
-        "src",
-        "cloudSrc",
-        "cloudAppParams",
-        "switchSkin",
-        "action",
-        "runnerParams",
-        "runnerArgs",
-        "cloudArgs"
+        "verbose"
       ]
+    },
+    {
+      id: "wpsUia.env",
+      description: "Inspect local WPS installation paths and versions."
+    },
+    {
+      id: "wpsUia.verbs",
+      description: "List Windows shell verbs for a PDF."
+    },
+    {
+      id: "wpsUia.windows",
+      description: "List top-level UI Automation windows."
+    },
+    {
+      id: "wpsUia.raw.pdfConverter",
+      description: "Experimental raw WPS PDF converter launcher with internal parameters."
     }
   ]
 };

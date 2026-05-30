@@ -51,6 +51,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$OutputEncoding = [System.Text.Encoding]::UTF8
 
 function ConvertTo-JsonLine($Object) {
   $Object | ConvertTo-Json -Compress -Depth 6
@@ -526,6 +528,7 @@ function Test-WpsArtifactTitle {
     $Title -like "*$InputName*" -or
     $Title -like "*$OutputName*" -or
     $Title -like "*WPS PDF*" -or
+    $Title -eq "WPS Office - WPS Office" -or
     $Title -eq $blankWorkbookTitle -or
     $Title -eq $blankDocumentTitle
   )
@@ -754,6 +757,14 @@ if (-not $NoClick) {
 
 $output = Wait-FileReady -Path $expectedOutputPath -TimeoutSeconds $TimeoutSeconds -NotBefore $startedAt
 
+$cleanupEvents = @()
+if ($finalOutputPath -ne $expectedOutputPath -and -not $NoCleanup) {
+  $cleanupEvents = @(
+    Close-WpsArtifactsSafe -BeforeProcesses $beforeProcesses -InputPath $inputPath -OutputPath $output.FullName -TimeoutSeconds $CleanupSeconds
+    Close-UiaWindowArtifactsSafe -InputPath $inputPath -OutputPath $output.FullName -TimeoutSeconds ([Math]::Min($CleanupSeconds, 10))
+  )
+}
+
 if ($finalOutputPath -ne $expectedOutputPath) {
   $parent = Split-Path $finalOutputPath -Parent
   if ($parent -and -not (Test-Path -LiteralPath $parent)) {
@@ -763,8 +774,7 @@ if ($finalOutputPath -ne $expectedOutputPath) {
   $output = Get-Item -LiteralPath $finalOutputPath
 }
 
-$cleanupEvents = @()
-if (-not $NoCleanup) {
+if ($finalOutputPath -eq $expectedOutputPath -and -not $NoCleanup) {
   $cleanupEvents = @(
     Close-WpsArtifactsSafe -BeforeProcesses $beforeProcesses -InputPath $inputPath -OutputPath $output.FullName -TimeoutSeconds $CleanupSeconds
     Close-UiaWindowArtifactsSafe -InputPath $inputPath -OutputPath $output.FullName -TimeoutSeconds ([Math]::Min($CleanupSeconds, 10))

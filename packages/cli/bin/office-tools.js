@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 import { capabilities as officecliCapabilities } from "@office-tools/backend-officecli";
 import { capabilities as wpsJsapiCapabilities } from "@office-tools/backend-wps-jsapi";
-import { capabilities as wpsUiaCapabilities, convertPdfToWord } from "@office-tools/backend-wps-uia";
+import {
+  capabilities as wpsUiaCapabilities,
+  convertPdfToWord,
+  convertPdfToWordRaw,
+  getEnvironment,
+  listPdfVerbs,
+  listWindows
+} from "@office-tools/backend-wps-uia";
 
 function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
@@ -11,18 +18,27 @@ function usage() {
   process.stdout.write(`office-tools
 
 Usage:
-  office-tools pdf to-word <input.pdf> [options]
   office-tools capabilities
+  office-tools pdf to-word <input.pdf> --out <output.docx> [options]
+  office-tools wps-uia env
+  office-tools wps-uia verbs <input.pdf>
+  office-tools wps-uia windows
+  office-tools wps-uia raw pdf-converter <input.pdf> [options]
 
-Options:
-  --backend wps-uia              Backend to use. Only wps-uia is implemented.
-  --output <path>                Move the generated DOCX to this path.
+PDF options:
+  --out <path>                   Output DOCX path.
+  --output <path>                Deprecated alias for --out.
+  --backend <auto|wps-uia>       Backend to use. Default: auto.
   --timeout <seconds>            Wait time for the output file. Default: 180.
+  --cleanup <auto|always|never>  Cleanup policy for UIA windows. Default: auto.
+  --cleanup-seconds <seconds>    Wait time for cleanup. Default: 20.
+  --overwrite                    Replace an existing output file.
+  --verbose                      Include staging diagnostics.
+
+Raw WPS UIA options:
   --launch-mode <mode>           shell, native, or cloud. Default: shell.
   --no-click                     Launch the window but do not click start.
   --no-cleanup                   Leave WPS windows open after conversion.
-  --cleanup-seconds <seconds>    Wait time for cleanup. Default: 20.
-  --overwrite                    Replace an existing output file.
   --preferred-verb <text>        Shell verb text to prefer. Can repeat.
   --wps-exe <path>               Path to wps.exe for native launch mode.
   --cloud-exe <path>             Path to wpscloudsvr.exe for cloud launch mode.
@@ -56,13 +72,8 @@ function parsePdfToWord(argv) {
     throw new Error("input PDF is required");
   }
 
-  const options = {
-    preferredVerbs: [],
-    runnerParams: [],
-    runnerArgs: [],
-    cloudArgs: []
-  };
-  let backend = "wps-uia";
+  const options = {};
+  let backend = "auto";
 
   for (let i = 1; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -71,6 +82,62 @@ function parsePdfToWord(argv) {
         backend = readOption(argv, i);
         i += 1;
         break;
+      case "--out":
+      case "--output":
+        options.outPath = readOption(argv, i);
+        i += 1;
+        break;
+      case "--timeout":
+        options.timeoutSeconds = Number(readOption(argv, i));
+        i += 1;
+        break;
+      case "--cleanup":
+        options.cleanup = readOption(argv, i);
+        i += 1;
+        break;
+      case "--cleanup-seconds":
+        options.cleanupSeconds = Number(readOption(argv, i));
+        i += 1;
+        break;
+      case "--overwrite":
+        options.overwrite = true;
+        break;
+      case "--verbose":
+        options.verbose = true;
+        break;
+      default:
+        throw new Error(`Unknown pdf to-word option: ${arg}`);
+    }
+  }
+
+  if (backend !== "auto" && backend !== "wps-uia") {
+    throw new Error(`Unsupported backend for pdf to-word: ${backend}`);
+  }
+
+  if (!options.outPath) {
+    throw new Error("pdf to-word requires --out <output.docx>");
+  }
+
+  return { input, options };
+}
+
+function parseRawPdfConverter(argv) {
+  const input = argv[0];
+  if (!input || input.startsWith("--")) {
+    throw new Error("input PDF is required");
+  }
+
+  const options = {
+    preferredVerbs: [],
+    runnerParams: [],
+    runnerArgs: [],
+    cloudArgs: []
+  };
+
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--out":
       case "--output":
         options.outputPath = readOption(argv, i);
         i += 1;
@@ -161,19 +228,15 @@ function parsePdfToWord(argv) {
         i += 1;
         break;
       default:
-        throw new Error(`Unknown option: ${arg}`);
+        throw new Error(`Unknown raw pdf-converter option: ${arg}`);
     }
-  }
-
-  if (backend !== "wps-uia") {
-    throw new Error(`Unsupported backend for pdf to-word: ${backend}`);
   }
 
   return { input, options };
 }
 
 async function main() {
-  const [domain, command, ...rest] = process.argv.slice(2);
+  const [domain, command, subcommand, ...rest] = process.argv.slice(2);
   if (!domain || domain === "--help" || domain === "-h") {
     usage();
     return;
@@ -192,12 +255,34 @@ async function main() {
   }
 
   if (domain === "pdf" && command === "to-word") {
-    const { input, options } = parsePdfToWord(rest);
+    const { input, options } = parsePdfToWord([subcommand, ...rest]);
     printJson(await convertPdfToWord(input, options));
     return;
   }
 
-  throw new Error(`Unknown command: ${[domain, command].filter(Boolean).join(" ")}`);
+  if (domain === "wps-uia" && command === "env") {
+    printJson(await getEnvironment());
+    return;
+  }
+
+  if (domain === "wps-uia" && command === "verbs") {
+    if (!subcommand) throw new Error("wps-uia verbs requires <input.pdf>");
+    printJson(await listPdfVerbs(subcommand));
+    return;
+  }
+
+  if (domain === "wps-uia" && command === "windows") {
+    printJson(await listWindows());
+    return;
+  }
+
+  if (domain === "wps-uia" && command === "raw" && subcommand === "pdf-converter") {
+    const { input, options } = parseRawPdfConverter(rest);
+    printJson(await convertPdfToWordRaw(input, options));
+    return;
+  }
+
+  throw new Error(`Unknown command: ${[domain, command, subcommand].filter(Boolean).join(" ")}`);
 }
 
 main().catch((error) => {
