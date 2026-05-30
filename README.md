@@ -99,7 +99,10 @@ office-tools-package/
 | WPS 打开、保存、导出、对象模型行为 | WPS COM |
 | WPS PDF 会员工具、UI-only 功能 | WPS UIA |
 
-详细规划见 [docs/backend-capability-plan.md](docs/backend-capability-plan.md)。
+详细规划：
+
+- [后端能力规划](docs/backend-capability-plan.md)
+- [WPS UIA 能力与 CLI 设计](docs/wps-uia-cli-design.md)
 
 ## 开源边界
 
