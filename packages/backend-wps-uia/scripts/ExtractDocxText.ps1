@@ -1,10 +1,10 @@
-$ErrorActionPreference = "Stop"
-
 param(
   [Parameter(Mandatory = $true)]
   [string]$Path,
   [int]$Take = 30
 )
+
+$ErrorActionPreference = "Stop"
 
 $code = @'
 using System;
