@@ -68,6 +68,7 @@ export function convertPdfToWord(inputPdf, options = {}) {
   pushSwitch(args, "-CloudAppParams", options.cloudAppParams);
   pushSwitch(args, "-SwitchSkin", options.switchSkin);
   pushSwitch(args, "-Action", options.action);
+  pushSwitch(args, "-CleanupSeconds", options.cleanupSeconds);
 
   if (options.runnerParams && options.runnerParams.length) {
     args.push("-RunnerParam", ...options.runnerParams.map(String));
@@ -87,6 +88,7 @@ export function convertPdfToWord(inputPdf, options = {}) {
 
   pushFlag(args, "-NoClick", options.noClick);
   pushFlag(args, "-Overwrite", options.overwrite);
+  pushFlag(args, "-NoCleanup", options.noCleanup);
 
   return new Promise((resolve, reject) => {
     const child = spawn("powershell.exe", args, {
@@ -130,6 +132,8 @@ export const capabilities = {
         "outputPath",
         "timeoutSeconds",
         "noClick",
+        "noCleanup",
+        "cleanupSeconds",
         "overwrite",
         "preferredVerbs",
         "wpsExe",

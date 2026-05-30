@@ -66,6 +66,10 @@ node packages/cli/bin/office-tools.js pdf to-word C:\path\input.pdf `
   --runner-param output_dir=C:\path
 ```
 
+By default, the WPS UIA backend closes WPS windows/processes opened by the
+conversion after the output file is ready. Use `--no-cleanup` only for debugging
+the WPS UI state.
+
 The WPS UIA backend currently exposes three launch modes:
 
 - `shell`: invoke the registered Windows shell verb for WPS PDF conversion.

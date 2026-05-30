@@ -20,6 +20,8 @@ Options:
   --timeout <seconds>            Wait time for the output file. Default: 180.
   --launch-mode <mode>           shell, native, or cloud. Default: shell.
   --no-click                     Launch the window but do not click start.
+  --no-cleanup                   Leave WPS windows open after conversion.
+  --cleanup-seconds <seconds>    Wait time for cleanup. Default: 20.
   --overwrite                    Replace an existing output file.
   --preferred-verb <text>        Shell verb text to prefer. Can repeat.
   --wps-exe <path>               Path to wps.exe for native launch mode.
@@ -83,6 +85,13 @@ function parsePdfToWord(argv) {
         break;
       case "--no-click":
         options.noClick = true;
+        break;
+      case "--no-cleanup":
+        options.noCleanup = true;
+        break;
+      case "--cleanup-seconds":
+        options.cleanupSeconds = Number(readOption(argv, i));
+        i += 1;
         break;
       case "--overwrite":
         options.overwrite = true;

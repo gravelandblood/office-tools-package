@@ -43,7 +43,11 @@ param(
 
   [string[]]$PreferredVerb = @(),
 
-  [switch]$Overwrite
+  [switch]$Overwrite,
+
+  [switch]$NoCleanup,
+
+  [int]$CleanupSeconds = 20
 )
 
 $ErrorActionPreference = "Stop"
@@ -311,6 +315,338 @@ function Wait-FileReady {
   throw "Timed out waiting for output file: $Path"
 }
 
+function Get-ProcessSnapshot {
+  $snapshot = @{}
+  Get-Process wps,et,wpp,wpspdf,wpscloudsvr -ErrorAction SilentlyContinue | ForEach-Object {
+    $snapshot[[int]$_.Id] = $true
+  }
+  return ,$snapshot
+}
+
+function Close-MainWindowByProcessId {
+  param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+  $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+  if (-not $proc) {
+    return $false
+  }
+
+  $hadWindow = [bool]$proc.MainWindowHandle
+  if ($hadWindow) {
+    [void]$proc.CloseMainWindow()
+    Start-Sleep -Milliseconds 800
+  }
+
+  $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+  if ($proc -and $proc.MainWindowHandle) {
+    Stop-Process -Id $ProcessId -Force
+  }
+
+  return $hadWindow
+}
+
+function Stop-ProcessIfRunning {
+  param([Parameter(Mandatory = $true)][int]$ProcessId)
+
+  $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+  if ($proc) {
+    Stop-Process -Id $ProcessId -Force
+    return $true
+  }
+
+  return $false
+}
+
+function Close-WpsArtifacts {
+  param(
+    [hashtable]$BeforeProcesses,
+    [string]$InputPath,
+    [string]$OutputPath,
+    [int]$TimeoutSeconds = 20
+  )
+
+  $events = New-Object System.Collections.Generic.List[object]
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $inputName = [IO.Path]::GetFileNameWithoutExtension($InputPath)
+  $outputName = [IO.Path]::GetFileNameWithoutExtension($OutputPath)
+
+  while ((Get-Date) -lt $deadline) {
+    $closedAny = $false
+    $processes = @(Get-Process wps,et,wpp,wpspdf -ErrorAction SilentlyContinue)
+
+    foreach ($proc in $processes) {
+      $isNew = -not $BeforeProcesses.ContainsKey([int]$proc.Id)
+      $title = $proc.MainWindowTitle
+      $titleMatches = $title -and (
+        $title -like "*$inputName*" -or
+        $title -like "*$outputName*" -or
+        $title -like "*WPS PDF*" -or
+        $title -eq "工作簿1 - WPS Office" -or
+        $title -eq "文档1 - WPS Office"
+      )
+
+      if ($isNew) {
+        $stopped = Stop-ProcessIfRunning -ProcessId $proc.Id
+        if ($stopped) {
+          $closedAny = $true
+          $events.Add([pscustomobject]@{
+            action = "stop-new-process"
+            processId = $proc.Id
+            processName = $proc.ProcessName
+            title = $title
+            newProcess = $true
+          })
+        }
+      } elseif ($titleMatches) {
+        $closed = Close-MainWindowByProcessId -ProcessId $proc.Id
+        if ($closed) {
+          $closedAny = $true
+          $events.Add([pscustomobject]@{
+            action = "close-window"
+            processId = $proc.Id
+            processName = $proc.ProcessName
+            title = $title
+            newProcess = $isNew
+          })
+        }
+      }
+    }
+
+    if (-not $closedAny) {
+      Start-Sleep -Milliseconds 700
+    }
+
+    $remaining = @(Get-Process wps,et,wpp,wpspdf -ErrorAction SilentlyContinue | Where-Object {
+      $isNew = -not $BeforeProcesses.ContainsKey([int]$_.Id)
+      $title = $_.MainWindowTitle
+      $titleMatches = $title -and (
+        $title -like "*$inputName*" -or
+        $title -like "*$outputName*" -or
+        $title -like "*WPS PDF*" -or
+        $title -eq "工作簿1 - WPS Office" -or
+        $title -eq "文档1 - WPS Office"
+      )
+      $titleMatches
+    })
+
+    if ($remaining.Count -eq 0) {
+      break
+    }
+  }
+
+  return ,@($events)
+}
+
+function Close-UiaWindowArtifacts {
+  param(
+    [string]$InputPath,
+    [string]$OutputPath,
+    [int]$TimeoutSeconds = 10
+  )
+
+  $events = New-Object System.Collections.Generic.List[object]
+  $inputName = [IO.Path]::GetFileNameWithoutExtension($InputPath)
+  $outputName = [IO.Path]::GetFileNameWithoutExtension($OutputPath)
+  $convertTitle = "WPS PDF" + (New-Text -CodePoints @(0x8F6C, 0x6362))
+  $doneTitle = New-Text -CodePoints @(0x64CD, 0x4F5C, 0x5B8C, 0x6210)
+
+  Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes -ErrorAction SilentlyContinue
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    $closedAny = $false
+    $root = [System.Windows.Automation.AutomationElement]::RootElement
+    $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+
+    foreach ($win in $windows) {
+      $name = ""
+      $windowProcessId = 0
+      try { $name = $win.Current.Name } catch {}
+      try { $windowProcessId = $win.Current.ProcessId } catch {}
+
+      if (-not $name) {
+        continue
+      }
+
+      $matches = (
+        $name -like "*$inputName*" -or
+        $name -like "*$outputName*" -or
+        $name -like "*$convertTitle*" -or
+        $name -like "*$doneTitle*"
+      )
+
+      if ($matches) {
+        $pattern = $null
+        if ($win.TryGetCurrentPattern([System.Windows.Automation.WindowPattern]::Pattern, [ref]$pattern)) {
+          try {
+            $pattern.Close()
+            Start-Sleep -Milliseconds 800
+            $proc = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
+            if ($proc -and $proc.MainWindowTitle -and (
+              $proc.MainWindowTitle -like "*$inputName*" -or
+              $proc.MainWindowTitle -like "*$outputName*" -or
+              $proc.MainWindowTitle -like "*$convertTitle*"
+            )) {
+              Stop-Process -Id $windowProcessId -Force
+            }
+            $closedAny = $true
+            $events.Add([pscustomobject]@{
+              action = "uia-close-window"
+              processId = $windowProcessId
+              title = $name
+            })
+          } catch {}
+        }
+      }
+    }
+
+    if (-not $closedAny) {
+      break
+    }
+
+    Start-Sleep -Milliseconds 700
+  }
+
+  return ,@($events)
+}
+
+function Test-WpsArtifactTitle {
+  param(
+    [string]$Title,
+    [string]$InputName,
+    [string]$OutputName
+  )
+
+  if (-not $Title) {
+    return $false
+  }
+
+  $blankWorkbookTitle = (New-Text -CodePoints @(0x5DE5, 0x4F5C, 0x7C3F) -Suffix "1 - WPS Office")
+  $blankDocumentTitle = (New-Text -CodePoints @(0x6587, 0x6863) -Suffix "1 - WPS Office")
+  return [bool](
+    $Title -like "*$InputName*" -or
+    $Title -like "*$OutputName*" -or
+    $Title -like "*WPS PDF*" -or
+    $Title -eq $blankWorkbookTitle -or
+    $Title -eq $blankDocumentTitle
+  )
+}
+
+function Close-WpsArtifactsSafe {
+  param(
+    [hashtable]$BeforeProcesses,
+    [string]$InputPath,
+    [string]$OutputPath,
+    [int]$TimeoutSeconds = 20
+  )
+
+  $events = @()
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $inputName = [IO.Path]::GetFileNameWithoutExtension($InputPath)
+  $outputName = [IO.Path]::GetFileNameWithoutExtension($OutputPath)
+
+  while ((Get-Date) -lt $deadline) {
+    $closedAny = $false
+    foreach ($proc in @(Get-Process wps,et,wpp,wpspdf -ErrorAction SilentlyContinue)) {
+      $isNew = -not $BeforeProcesses.ContainsKey([int]$proc.Id)
+      $title = [string]$proc.MainWindowTitle
+      $titleMatches = Test-WpsArtifactTitle -Title $title -InputName $inputName -OutputName $outputName
+
+      if ($isNew) {
+        if (Stop-ProcessIfRunning -ProcessId $proc.Id) {
+          $closedAny = $true
+          $events += [pscustomobject]@{
+            action = "stop-new-process"
+            processId = $proc.Id
+            processName = $proc.ProcessName
+            title = $title
+            newProcess = $true
+          }
+        }
+      } elseif ($titleMatches) {
+        if (Close-MainWindowByProcessId -ProcessId $proc.Id) {
+          $closedAny = $true
+          $events += [pscustomobject]@{
+            action = "close-window"
+            processId = $proc.Id
+            processName = $proc.ProcessName
+            title = $title
+            newProcess = $false
+          }
+        }
+      }
+    }
+
+    $remaining = @(Get-Process wps,et,wpp,wpspdf -ErrorAction SilentlyContinue | Where-Object {
+      Test-WpsArtifactTitle -Title ([string]$_.MainWindowTitle) -InputName $inputName -OutputName $outputName
+    })
+
+    if ($remaining.Count -eq 0) {
+      break
+    }
+
+    if (-not $closedAny) {
+      Start-Sleep -Milliseconds 700
+    }
+  }
+
+  return @($events)
+}
+
+function Close-UiaWindowArtifactsSafe {
+  param(
+    [string]$InputPath,
+    [string]$OutputPath,
+    [int]$TimeoutSeconds = 10
+  )
+
+  $events = @()
+  $inputName = [IO.Path]::GetFileNameWithoutExtension($InputPath)
+  $outputName = [IO.Path]::GetFileNameWithoutExtension($OutputPath)
+  $convertTitle = "WPS PDF" + (New-Text -CodePoints @(0x8F6C, 0x6362))
+  $doneTitle = New-Text -CodePoints @(0x64CD, 0x4F5C, 0x5B8C, 0x6210)
+
+  Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes -ErrorAction SilentlyContinue
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    $closedAny = $false
+    $root = [System.Windows.Automation.AutomationElement]::RootElement
+    $windows = $root.FindAll([System.Windows.Automation.TreeScope]::Children, [System.Windows.Automation.Condition]::TrueCondition)
+
+    foreach ($win in $windows) {
+      $name = ""
+      $windowProcessId = 0
+      try { $name = $win.Current.Name } catch {}
+      try { $windowProcessId = $win.Current.ProcessId } catch {}
+
+      $matches = (
+        $name -like "*$inputName*" -or
+        $name -like "*$outputName*" -or
+        $name -like "*$convertTitle*" -or
+        $name -like "*$doneTitle*"
+      )
+
+      if ($matches -and $windowProcessId) {
+        if (Stop-ProcessIfRunning -ProcessId $windowProcessId) {
+          $closedAny = $true
+          $events += [pscustomobject]@{
+            action = "uia-stop-process"
+            processId = $windowProcessId
+            title = $name
+          }
+        }
+      }
+    }
+
+    if (-not $closedAny) {
+      break
+    }
+
+    Start-Sleep -Milliseconds 700
+  }
+
+  return @($events)
+}
+
 function Invoke-WpsPdfStartButton {
   $code = @'
 using System;
@@ -378,6 +714,7 @@ if ([IO.Path]::GetExtension($inputPath).ToLowerInvariant() -ne ".pdf") {
   throw "Input must be a PDF: $inputPath"
 }
 
+$beforeProcesses = Get-ProcessSnapshot
 $expectedOutputPath = [IO.Path]::ChangeExtension($inputPath, ".docx")
 $finalOutputPath = $expectedOutputPath
 if ($OutputPath) {
@@ -426,6 +763,14 @@ if ($finalOutputPath -ne $expectedOutputPath) {
   $output = Get-Item -LiteralPath $finalOutputPath
 }
 
+$cleanupEvents = @()
+if (-not $NoCleanup) {
+  $cleanupEvents = @(
+    Close-WpsArtifactsSafe -BeforeProcesses $beforeProcesses -InputPath $inputPath -OutputPath $output.FullName -TimeoutSeconds $CleanupSeconds
+    Close-UiaWindowArtifactsSafe -InputPath $inputPath -OutputPath $output.FullName -TimeoutSeconds ([Math]::Min($CleanupSeconds, 10))
+  )
+}
+
 ConvertTo-JsonLine ([pscustomobject]@{
   ok = $true
   backend = "wps-uia"
@@ -437,4 +782,5 @@ ConvertTo-JsonLine ([pscustomobject]@{
   runner = $runner
   length = $output.Length
   lastWriteTime = $output.LastWriteTime.ToString("o")
+  cleanup = $cleanupEvents
 })
