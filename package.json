@@ -1,0 +1,12 @@
+{
+  "name": "office-tools-package-workspace",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "office-tools": "node packages/cli/bin/office-tools.js"
+  }
+}

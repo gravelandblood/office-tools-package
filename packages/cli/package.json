@@ -1,0 +1,13 @@
+{
+  "name": "@office-tools/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "office-tools": "bin/office-tools.js"
+  },
+  "dependencies": {
+    "@office-tools/backend-officecli": "0.1.0",
+    "@office-tools/backend-wps-jsapi": "0.1.0",
+    "@office-tools/backend-wps-uia": "0.1.0"
+  }
+}
