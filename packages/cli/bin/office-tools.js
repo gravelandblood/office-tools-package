@@ -3,6 +3,8 @@ import { capabilities as officecliCapabilities } from "@office-tools/backend-off
 import { capabilities as wpsJsapiCapabilities } from "@office-tools/backend-wps-jsapi";
 import {
   capabilities as wpsUiaCapabilities,
+  convertPdfToExcel,
+  convertPdfToPpt,
   convertPdfToWord,
   convertPdfToWordRaw,
   getEnvironment,
@@ -20,13 +22,15 @@ function usage() {
 Usage:
   office-tools capabilities
   office-tools pdf to-word <input.pdf> --out <output.docx> [options]
+  office-tools pdf to-excel <input.pdf> --out <output.xlsx> [options]
+  office-tools pdf to-ppt <input.pdf> --out <output.pptx> [options]
   office-tools wps-uia env
   office-tools wps-uia verbs <input.pdf>
   office-tools wps-uia windows
   office-tools wps-uia raw pdf-converter <input.pdf> [options]
 
 PDF options:
-  --out <path>                   Output DOCX path.
+  --out <path>                   Output path.
   --output <path>                Deprecated alias for --out.
   --backend <auto|wps-uia>       Backend to use. Default: auto.
   --timeout <seconds>            Wait time for the output file. Default: 180.
@@ -66,7 +70,7 @@ function readOption(args, index) {
   return value;
 }
 
-function parsePdfToWord(argv) {
+function parsePdfConversion(command, argv) {
   const input = argv[0];
   if (!input || input.startsWith("--")) {
     throw new Error("input PDF is required");
@@ -111,11 +115,11 @@ function parsePdfToWord(argv) {
   }
 
   if (backend !== "auto" && backend !== "wps-uia") {
-    throw new Error(`Unsupported backend for pdf to-word: ${backend}`);
+    throw new Error(`Unsupported backend for pdf ${command}: ${backend}`);
   }
 
   if (!options.outPath) {
-    throw new Error("pdf to-word requires --out <output.docx>");
+    throw new Error(`pdf ${command} requires --out <output>`);
   }
 
   return { input, options };
@@ -255,8 +259,20 @@ async function main() {
   }
 
   if (domain === "pdf" && command === "to-word") {
-    const { input, options } = parsePdfToWord([subcommand, ...rest]);
+    const { input, options } = parsePdfConversion(command, [subcommand, ...rest]);
     printJson(await convertPdfToWord(input, options));
+    return;
+  }
+
+  if (domain === "pdf" && command === "to-excel") {
+    const { input, options } = parsePdfConversion(command, [subcommand, ...rest]);
+    printJson(await convertPdfToExcel(input, options));
+    return;
+  }
+
+  if (domain === "pdf" && command === "to-ppt") {
+    const { input, options } = parsePdfConversion(command, [subcommand, ...rest]);
+    printJson(await convertPdfToPpt(input, options));
     return;
   }
 

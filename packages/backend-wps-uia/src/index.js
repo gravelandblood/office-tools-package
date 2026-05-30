@@ -132,10 +132,34 @@ function normalizeCleanupMode(mode) {
   throw new Error(`Unsupported cleanup mode: ${mode}`);
 }
 
-function toProductPdfToWordResult(result, options = {}, overrides = {}) {
+const pdfConverterTargets = {
+  word: {
+    command: "pdf.toWord",
+    extension: ".docx",
+    action: "ConvertToWord",
+    tempPrefix: "office-tools-pdf2word-",
+    launchMode: "shell"
+  },
+  excel: {
+    command: "pdf.toExcel",
+    extension: ".xlsx",
+    action: "ConvertToExcel",
+    tempPrefix: "office-tools-pdf2excel-",
+    launchMode: "native"
+  },
+  ppt: {
+    command: "pdf.toPpt",
+    extension: ".pptx",
+    action: "ConvertToPowerPoint",
+    tempPrefix: "office-tools-pdf2ppt-",
+    launchMode: "native"
+  }
+};
+
+function toProductPdfConverterResult(target, result, options = {}, overrides = {}) {
   const product = {
     ok: result.ok,
-    command: "pdf.toWord",
+    command: target.command,
     backend: result.backend,
     input: overrides.input || result.input,
     output: overrides.output || result.output,
@@ -157,7 +181,12 @@ function toProductPdfToWordResult(result, options = {}, overrides = {}) {
   return product;
 }
 
-export async function convertPdfToWord(inputPdf, options = {}) {
+async function convertPdfWithWps(targetName, inputPdf, options = {}) {
+  const target = pdfConverterTargets[targetName];
+  if (!target) {
+    throw new Error(`Unsupported PDF converter target: ${targetName}`);
+  }
+
   const outPath = options.outPath || options.outputPath;
   const cleanupNever = options.noCleanup || normalizeCleanupMode(options.cleanup);
   const baseOptions = {
@@ -165,19 +194,20 @@ export async function convertPdfToWord(inputPdf, options = {}) {
     overwrite: options.overwrite,
     noCleanup: cleanupNever,
     cleanupSeconds: options.cleanupSeconds,
-    launchMode: options.launchMode || "shell",
-    preferredVerbs: options.preferredVerbs
+    launchMode: options.launchMode || target.launchMode,
+    preferredVerbs: options.preferredVerbs,
+    action: target.action
   };
 
   if (!outPath) {
     const result = await runConvertScript(inputPdf, baseOptions);
-    return toProductPdfToWordResult(result, options);
+    return toProductPdfConverterResult(target, result, options);
   }
 
   const resolvedInput = path.resolve(inputPdf);
   const resolvedOut = path.resolve(outPath);
-  if (path.extname(resolvedOut).toLowerCase() !== ".docx") {
-    throw new Error(`--out must end with .docx for pdf to-word: ${resolvedOut}`);
+  if (path.extname(resolvedOut).toLowerCase() !== target.extension) {
+    throw new Error(`--out must end with ${target.extension} for ${target.command}: ${resolvedOut}`);
   }
 
   try {
@@ -189,8 +219,8 @@ export async function convertPdfToWord(inputPdf, options = {}) {
     if (error.code !== "ENOENT") throw error;
   }
 
-  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "office-tools-pdf2word-"));
-  const stagedPdf = path.join(stagingDir, `${path.basename(resolvedOut, ".docx")}.pdf`);
+  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), target.tempPrefix));
+  const stagedPdf = path.join(stagingDir, `${path.basename(resolvedOut, target.extension)}.pdf`);
   try {
     await fs.copyFile(resolvedInput, stagedPdf);
     await fs.mkdir(path.dirname(resolvedOut), { recursive: true });
@@ -199,7 +229,7 @@ export async function convertPdfToWord(inputPdf, options = {}) {
       outputPath: resolvedOut,
       overwrite: options.overwrite
     });
-    return toProductPdfToWordResult(result, options, {
+    return toProductPdfConverterResult(target, result, options, {
       input: resolvedInput,
       output: resolvedOut,
       staging: {
@@ -216,6 +246,18 @@ export async function convertPdfToWord(inputPdf, options = {}) {
       }
     }
   }
+}
+
+export function convertPdfToWord(inputPdf, options = {}) {
+  return convertPdfWithWps("word", inputPdf, options);
+}
+
+export function convertPdfToExcel(inputPdf, options = {}) {
+  return convertPdfWithWps("excel", inputPdf, options);
+}
+
+export function convertPdfToPpt(inputPdf, options = {}) {
+  return convertPdfWithWps("ppt", inputPdf, options);
 }
 
 export function convertPdfToWordRaw(inputPdf, options = {}) {
@@ -316,6 +358,30 @@ export const capabilities = {
     {
       id: "pdf.toWord",
       description: "Convert a PDF to DOCX through the WPS PDF conversion desktop UI.",
+      options: [
+        "outPath",
+        "timeoutSeconds",
+        "cleanup",
+        "cleanupSeconds",
+        "overwrite",
+        "verbose"
+      ]
+    },
+    {
+      id: "pdf.toExcel",
+      description: "Convert a PDF to XLSX through the WPS PDF conversion desktop UI.",
+      options: [
+        "outPath",
+        "timeoutSeconds",
+        "cleanup",
+        "cleanupSeconds",
+        "overwrite",
+        "verbose"
+      ]
+    },
+    {
+      id: "pdf.toPpt",
+      description: "Convert a PDF to PPTX through the WPS PDF conversion desktop UI.",
       options: [
         "outPath",
         "timeoutSeconds",

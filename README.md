@@ -1,23 +1,21 @@
 # office-tools-package
 
-一个面向 Agent、CLI 和 MCP 的 Office/WPS 自动化工具包实验项目。
+面向 Agent、CLI 和 MCP 的 Office/WPS 自动化工具包实验项目。
 
-这个项目的目标不是只做一个脚本，而是把多种文档自动化路线统一成一个可组合的工具层：
+这个项目的目标不是做一堆零散脚本，而是把多条办公自动化路线整理成统一、可组合、可验证的工具层：
 
 - **OfficeCLI**：用于无头、确定性的 OOXML 文件级读写。
-- **WPS JSAPI**：用于 WPS 插件/侧边栏、活动文档、选区和窗口上下文。
-- **WPS COM**：用于真实 WPS 应用对象模型、打开/保存/导出等行为。
-- **WPS UIA**：用于 WPS 只暴露在桌面界面里的能力，例如会员 PDF 转换工具。
+- **WPS JSAPI**：用于 WPS 插件、侧边栏、活动文档、选区和窗口上下文。
+- **WPS COM**：用于真实 WPS 应用对象模型、打开、保存、导出等行为。
+- **WPS UIA**：用于只能通过 WPS 桌面界面使用的产品能力，例如 PDF 转 Office、OCR、压缩等。
 
-当前最先落地的是 WPS UI Automation 后端的 **PDF 转 Word** 能力。
+当前已经落地的是 WPS UI Automation 后端里的 PDF 转 Office 能力。
 
 ## 当前状态
 
-这是一个早期开放源码原型，已经包含：
-
 - npm workspace 包结构
 - `office-tools` CLI 原型
-- WPS UIA PDF 转 Word 后端
+- WPS UIA PDF 转 Word / Excel / PPT
 - OfficeCLI / WPS JSAPI / WPS UIA 能力规划
 - WPS 插件桥接和 RPC 调用原型
 - Windows 桌面 WPS 自动化诊断脚本
@@ -34,12 +32,14 @@ npm install
 node packages/cli/bin/office-tools.js capabilities
 ```
 
-## PDF 转 Word
+## PDF 转 Office
 
 使用 WPS UIA 后端转换 PDF：
 
 ```powershell
 node packages/cli/bin/office-tools.js pdf to-word C:\path\input.pdf --out C:\path\output.docx
+node packages/cli/bin/office-tools.js pdf to-excel C:\path\input.pdf --out C:\path\output.xlsx
+node packages/cli/bin/office-tools.js pdf to-ppt C:\path\input.pdf --out C:\path\output.pptx
 ```
 
 常用参数：
@@ -47,10 +47,13 @@ node packages/cli/bin/office-tools.js pdf to-word C:\path\input.pdf --out C:\pat
 ```powershell
 node packages/cli/bin/office-tools.js pdf to-word C:\path\input.pdf `
   --out C:\path\output.docx `
-  --timeout 240
+  --timeout 240 `
+  --overwrite
 ```
 
-默认情况下，转换完成后会清理本次任务打开的 WPS 窗口、转换窗口和自动打开的文档页，避免影响下一次自动化任务。调试 WPS UI 时可以使用：
+默认情况下，转换完成后会清理本次任务打开的 WPS 转换窗口和自动打开的文档页，避免影响下一次自动化任务。
+
+调试 WPS UI 时可以使用：
 
 ```powershell
 node packages/cli/bin/office-tools.js wps-uia raw pdf-converter C:\path\input.pdf --no-cleanup
@@ -64,39 +67,9 @@ node packages/cli/bin/office-tools.js wps-uia verbs C:\path\input.pdf
 node packages/cli/bin/office-tools.js wps-uia windows
 ```
 
-## 启动模式
-
-WPS UIA PDF 转 Word 后端支持三种启动模式：
-
-- `shell`：调用 Windows 中注册的 WPS PDF 转 Word 右键菜单/ Shell verb。
-- `native`：调用已观测到的 `wps.exe Run /InstanceId=kpdf2wordv2 ...` 入口。
-- `cloud`：调用已观测到的 `wpscloudsvr.exe /app_id=kpdf2wordv2 ...` 入口。
-
-`cloud` 模式中的 `app_params` 结构仍需要按 WPS 版本继续逆向/观测，因此目前通过 `--cloud-app-params` 和 `--cloud-arg` 透传。
-
-## 目录结构
-
-```text
-office-tools-package/
-  docs/
-    backend-capability-plan.md
-    office-tools-package-blueprint.md
-    wps-bridge-research.md
-  packages/
-    cli/
-    backend-officecli/
-    backend-wps-jsapi/
-    backend-wps-uia/
-    backend-wps-com/
-    mcp-server/
-  examples/
-    wps-addin-bridge/
-    wps-rpc-invoke-prototype/
-```
-
 ## 后端选择原则
 
-优先使用确定性、无头的文件后端；只有在能力确实只存在于桌面产品 UI 中时，才使用 UIA。
+优先使用确定性、无头的文件后端；只有能力确实存在于桌面产品 UI 中时，才使用 UIA。
 
 | 场景 | 推荐后端 |
 |---|---|
@@ -104,19 +77,40 @@ office-tools-package/
 | CI / 批处理 / MCP 结构化工具 | OfficeCLI |
 | WPS 活动文档、选区、插件侧边栏 | WPS JSAPI |
 | WPS 打开、保存、导出、对象模型行为 | WPS COM |
-| WPS PDF 会员工具、UI-only 功能 | WPS UIA |
+| WPS PDF 会员工具、UI-only 能力 | WPS UIA |
 
-详细规划：
+## WPS UIA 方向
 
-- [后端能力规划](docs/backend-capability-plan.md)
-- [WPS UIA 能力与 CLI 设计](docs/wps-uia-cli-design.md)
+已经验证并产品化：
+
+- `pdf to-word`
+- `pdf to-excel`
+- `pdf to-ppt`
+
+下一批优先研究：
+
+- `pdf compress`
+- `image ocr`
+- `image to-excel`
+- `ofd to-pdf`
+
+不优先做成稳定 CLI：
+
+- PDF 编辑、签名、表单填写等强交互能力
+- WPS AI 阅读/总结/生成类能力
+- 本地库能稳定完成的普通 PDF 合并、拆分、旋转
 
 ## 开源边界
 
-- 本项目不会绕过 WPS 会员或授权限制。
+- 本项目不绕过 WPS 会员或授权限制。
 - UIA 自动化只面向用户已经登录、已经授权的本地桌面会话。
 - WPS UIA/COM 后端仅适用于 Windows 桌面环境。
-- OfficeCLI 作为独立后端适配，不与本项目强绑定。
+- OfficeCLI 作为独立适配后端，不与本项目强绑定。
+
+## 文档
+
+- [后端能力规划](docs/backend-capability-plan.md)
+- [WPS UIA 能力与 CLI 设计](docs/wps-uia-cli-design.md)
 
 ## 许可证
 

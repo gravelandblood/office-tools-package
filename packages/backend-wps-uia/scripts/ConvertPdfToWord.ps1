@@ -718,10 +718,35 @@ if ([IO.Path]::GetExtension($inputPath).ToLowerInvariant() -ne ".pdf") {
 }
 
 $beforeProcesses = Get-ProcessSnapshot
-$expectedOutputPath = [IO.Path]::ChangeExtension($inputPath, ".docx")
-$finalOutputPath = $expectedOutputPath
+$finalOutputPath = ""
 if ($OutputPath) {
   $finalOutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
+}
+
+function Get-ExpectedOutputExtension {
+  param(
+    [string]$Action,
+    [string]$FinalOutputPath
+  )
+
+  if ($FinalOutputPath) {
+    $extension = [IO.Path]::GetExtension($FinalOutputPath).ToLowerInvariant()
+    if ($extension) {
+      return $extension
+    }
+  }
+
+  switch ($Action.ToLowerInvariant()) {
+    "converttoexcel" { return ".xlsx" }
+    "converttopowerpoint" { return ".pptx" }
+    default { return ".docx" }
+  }
+}
+
+$expectedExtension = Get-ExpectedOutputExtension -Action $Action -FinalOutputPath $finalOutputPath
+$expectedOutputPath = [IO.Path]::ChangeExtension($inputPath, $expectedExtension)
+if (-not $finalOutputPath) {
+  $finalOutputPath = $expectedOutputPath
 }
 
 $startedAt = Get-Date
