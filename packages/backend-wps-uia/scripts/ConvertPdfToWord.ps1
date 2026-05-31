@@ -341,7 +341,7 @@ function Close-MainWindowByProcessId {
 
   $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
   if ($proc -and $proc.MainWindowHandle) {
-    Stop-Process -Id $ProcessId -Force
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
   }
 
   return $hadWindow
@@ -488,7 +488,7 @@ function Close-UiaWindowArtifacts {
               $proc.MainWindowTitle -like "*$outputName*" -or
               $proc.MainWindowTitle -like "*$convertTitle*"
             )) {
-              Stop-Process -Id $windowProcessId -Force
+              Stop-Process -Id $windowProcessId -Force -ErrorAction SilentlyContinue
             }
             $closedAny = $true
             $events.Add([pscustomobject]@{
@@ -739,12 +739,18 @@ function Get-ExpectedOutputExtension {
   switch ($Action.ToLowerInvariant()) {
     "converttoexcel" { return ".xlsx" }
     "converttopowerpoint" { return ".pptx" }
+    "converttoimgpdf" { return ".pdf" }
     default { return ".docx" }
   }
 }
 
 $expectedExtension = Get-ExpectedOutputExtension -Action $Action -FinalOutputPath $finalOutputPath
-$expectedOutputPath = [IO.Path]::ChangeExtension($inputPath, $expectedExtension)
+if ($Action.ToLowerInvariant() -eq "converttoimgpdf") {
+  $scanSuffix = New-Text -CodePoints @(0x626B, 0x63CF, 0x7248) -Prefix "_"
+  $expectedOutputPath = Join-Path (Split-Path $inputPath -Parent) ([IO.Path]::GetFileNameWithoutExtension($inputPath) + $scanSuffix + $expectedExtension)
+} else {
+  $expectedOutputPath = [IO.Path]::ChangeExtension($inputPath, $expectedExtension)
+}
 if (-not $finalOutputPath) {
   $finalOutputPath = $expectedOutputPath
 }

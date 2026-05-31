@@ -166,10 +166,105 @@ async function runCompressScript(inputPdf, options = {}) {
   }
 }
 
+async function runSlimFileScript(inputFile, options = {}) {
+  if (!inputFile) {
+    throw new Error("inputFile is required");
+  }
+  if (!options.outputPath) {
+    throw new Error("outputPath is required");
+  }
+
+  const script = path.join(scriptDir, "SlimFile.ps1");
+  const args = [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    script,
+    "-InputFile",
+    inputFile,
+    "-OutputPath",
+    options.outputPath
+  ];
+
+  pushSwitch(args, "-TimeoutSeconds", options.timeoutSeconds);
+  pushSwitch(args, "-WpsExe", options.wpsExe);
+  pushSwitch(args, "-AppFramework", options.appFramework);
+  pushSwitch(args, "-CleanupSeconds", options.cleanupSeconds);
+
+  pushFlag(args, "-Overwrite", options.overwrite);
+  pushFlag(args, "-NoCleanup", options.noCleanup);
+
+  const { stdout, stderr } = await runPowerShell(args, { windowsHide: false });
+  try {
+    return parseJsonLine(stdout);
+  } catch (error) {
+    error.stdout = stdout;
+    error.stderr = stderr;
+    throw error;
+  }
+}
+
 function normalizeCleanupMode(mode) {
   if (!mode || mode === "auto" || mode === "always") return false;
   if (mode === "never") return true;
   throw new Error(`Unsupported cleanup mode: ${mode}`);
+}
+
+const uiaLockDir = path.join(os.tmpdir(), "office-tools-wps-uia.lock");
+
+async function sleep(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withWpsUiaLock(fn, options = {}) {
+  const timeoutMs = Math.max(1, Number(options.lockTimeoutSeconds || 300)) * 1000;
+  const staleMs = Math.max(60, Number(options.lockStaleSeconds || 600)) * 1000;
+  const startedAt = Date.now();
+  const ownerToken = `${process.pid}-${startedAt}-${Math.random().toString(16).slice(2)}`;
+
+  while (true) {
+    try {
+      await fs.mkdir(uiaLockDir);
+      await fs.writeFile(path.join(uiaLockDir, "owner.json"), JSON.stringify({
+        pid: process.pid,
+        token: ownerToken,
+        startedAt: new Date().toISOString()
+      }));
+      break;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+
+      try {
+        const stat = await fs.stat(uiaLockDir);
+        if (Date.now() - stat.mtimeMs > staleMs) {
+          await fs.rm(uiaLockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch (statError) {
+        if (statError.code === "ENOENT") continue;
+        throw statError;
+      }
+
+      if (Date.now() - startedAt > timeoutMs) {
+        throw new Error(`Timed out waiting for WPS UIA lock: ${uiaLockDir}`);
+      }
+      await sleep(500);
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    try {
+      const owner = JSON.parse(await fs.readFile(path.join(uiaLockDir, "owner.json"), "utf8"));
+      if (owner.token === ownerToken) {
+        await fs.rm(uiaLockDir, { recursive: true, force: true });
+      }
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
 }
 
 const pdfConverterTargets = {
@@ -192,6 +287,13 @@ const pdfConverterTargets = {
     extension: ".pptx",
     action: "ConvertToPowerPoint",
     tempPrefix: "office-tools-pdf2ppt-",
+    launchMode: "native"
+  },
+  imagePdf: {
+    command: "pdf.toImagePdf",
+    extension: ".pdf",
+    action: "ConvertToImgPDF",
+    tempPrefix: "office-tools-pdf2imagepdf-",
     launchMode: "native"
   }
 };
@@ -240,7 +342,7 @@ async function convertPdfWithWps(targetName, inputPdf, options = {}) {
   };
 
   if (!outPath) {
-    const result = await runConvertScript(inputPdf, baseOptions);
+    const result = await withWpsUiaLock(() => runConvertScript(inputPdf, baseOptions), options);
     return toProductPdfConverterResult(target, result, options);
   }
 
@@ -264,11 +366,11 @@ async function convertPdfWithWps(targetName, inputPdf, options = {}) {
   try {
     await fs.copyFile(resolvedInput, stagedPdf);
     await fs.mkdir(path.dirname(resolvedOut), { recursive: true });
-    const result = await runConvertScript(stagedPdf, {
+    const result = await withWpsUiaLock(() => runConvertScript(stagedPdf, {
       ...baseOptions,
       outputPath: resolvedOut,
       overwrite: options.overwrite
-    });
+    }), options);
     return toProductPdfConverterResult(target, result, options, {
       input: resolvedInput,
       output: resolvedOut,
@@ -300,6 +402,10 @@ export function convertPdfToPpt(inputPdf, options = {}) {
   return convertPdfWithWps("ppt", inputPdf, options);
 }
 
+export function convertPdfToImagePdf(inputPdf, options = {}) {
+  return convertPdfWithWps("imagePdf", inputPdf, options);
+}
+
 export async function compressPdf(inputPdf, options = {}) {
   const outPath = options.outPath || options.outputPath;
   if (!outPath) {
@@ -327,14 +433,14 @@ export async function compressPdf(inputPdf, options = {}) {
   try {
     await fs.copyFile(resolvedInput, stagedPdf);
     await fs.mkdir(path.dirname(resolvedOut), { recursive: true });
-    const result = await runCompressScript(stagedPdf, {
+    const result = await withWpsUiaLock(() => runCompressScript(stagedPdf, {
       outputPath: resolvedOut,
       level: options.level || "standard",
       timeoutSeconds: options.timeoutSeconds,
       overwrite: options.overwrite,
       noCleanup: cleanupNever,
       cleanupSeconds: options.cleanupSeconds
-    });
+    }), options);
 
     const product = {
       ok: result.ok,
@@ -372,6 +478,80 @@ export async function compressPdf(inputPdf, options = {}) {
   }
 }
 
+export async function slimFile(inputFile, options = {}) {
+  const outPath = options.outPath || options.outputPath;
+  if (!outPath) {
+    throw new Error("file slim requires --out <output>");
+  }
+
+  const resolvedInput = path.resolve(inputFile);
+  const resolvedOut = path.resolve(outPath);
+  const inputExt = path.extname(resolvedInput).toLowerCase();
+  if (!inputExt) {
+    throw new Error(`Input file must have an extension: ${resolvedInput}`);
+  }
+  if (path.extname(resolvedOut).toLowerCase() !== inputExt) {
+    throw new Error(`--out extension must match input extension for file.slim: ${resolvedOut}`);
+  }
+
+  try {
+    await fs.access(resolvedOut);
+    if (!options.overwrite) {
+      throw new Error(`Output already exists. Pass --overwrite to replace it: ${resolvedOut}`);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const cleanupNever = options.noCleanup || normalizeCleanupMode(options.cleanup);
+  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "office-tools-fileslim-"));
+  const stagedInput = path.join(stagingDir, path.basename(resolvedOut));
+  try {
+    await fs.copyFile(resolvedInput, stagedInput);
+    await fs.mkdir(path.dirname(resolvedOut), { recursive: true });
+    const result = await withWpsUiaLock(() => runSlimFileScript(stagedInput, {
+      outputPath: resolvedOut,
+      timeoutSeconds: options.timeoutSeconds,
+      overwrite: options.overwrite,
+      noCleanup: cleanupNever,
+      cleanupSeconds: options.cleanupSeconds
+    }), options);
+
+    const product = {
+      ok: result.ok,
+      command: "file.slim",
+      backend: result.backend,
+      input: resolvedInput,
+      output: resolvedOut,
+      inputLength: result.inputLength,
+      length: result.length,
+      savedBytes: result.savedBytes,
+      lastWriteTime: result.lastWriteTime,
+      events: result.cleanup || []
+    };
+
+    if (options.verbose) {
+      product.diagnostics = {
+        runner: result.runner,
+        staging: {
+          dir: stagingDir,
+          input: stagedInput
+        }
+      };
+    }
+
+    return product;
+  } finally {
+    try {
+      await fs.rm(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+    } catch (error) {
+      if (options.verbose) {
+        process.stderr.write(`warning: unable to remove staging directory ${stagingDir}: ${error.message}\n`);
+      }
+    }
+  }
+}
+
 export function convertPdfToWordRaw(inputPdf, options = {}) {
   return runConvertScript(inputPdf, options);
 }
@@ -390,6 +570,34 @@ ${command}
     utf8Command
   ], { windowsHide: true });
   return parseJsonLine(stdout);
+}
+
+async function runJsonScript(scriptName, scriptArgs = {}, options = {}) {
+  const script = path.join(scriptDir, scriptName);
+  const args = [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    script
+  ];
+
+  for (const [name, value] of Object.entries(scriptArgs)) {
+    if (typeof value === "boolean") {
+      pushFlag(args, name, value);
+    } else {
+      pushSwitch(args, name, value);
+    }
+  }
+
+  const { stdout, stderr } = await runPowerShell(args, { windowsHide: options.windowsHide ?? true });
+  try {
+    return parseJsonLine(stdout);
+  } catch (error) {
+    error.stdout = stdout;
+    error.stderr = stderr;
+    throw error;
+  }
 }
 
 export function getEnvironment() {
@@ -464,6 +672,16 @@ $items = @($wins | ForEach-Object {
   return runJsonCommand(command);
 }
 
+export function dumpWindow(options = {}) {
+  return runJsonScript("DumpWindow.ps1", {
+    "-Title": options.title,
+    "-ProcessId": options.processId,
+    "-MaxDepth": options.maxDepth,
+    "-TimeoutSeconds": options.timeoutSeconds,
+    "-All": options.all
+  });
+}
+
 export const capabilities = {
   backend: "wps-uia",
   commands: [
@@ -504,11 +722,35 @@ export const capabilities = {
       ]
     },
     {
+      id: "pdf.toImagePdf",
+      description: "Convert a PDF to image-only PDF through the WPS PDF conversion desktop UI.",
+      options: [
+        "outPath",
+        "timeoutSeconds",
+        "cleanup",
+        "cleanupSeconds",
+        "overwrite",
+        "verbose"
+      ]
+    },
+    {
       id: "pdf.compress",
       description: "Compress a PDF through the WPS PDF compression desktop UI.",
       options: [
         "outPath",
         "level",
+        "timeoutSeconds",
+        "cleanup",
+        "cleanupSeconds",
+        "overwrite",
+        "verbose"
+      ]
+    },
+    {
+      id: "file.slim",
+      description: "Reduce Office/PDF file size through the WPS file slimming desktop UI.",
+      options: [
+        "outPath",
         "timeoutSeconds",
         "cleanup",
         "cleanupSeconds",
@@ -527,6 +769,10 @@ export const capabilities = {
     {
       id: "wpsUia.windows",
       description: "List top-level UI Automation windows."
+    },
+    {
+      id: "wpsUia.dumpWindow",
+      description: "Dump UI Automation controls for top-level windows."
     },
     {
       id: "wpsUia.raw.pdfConverter",

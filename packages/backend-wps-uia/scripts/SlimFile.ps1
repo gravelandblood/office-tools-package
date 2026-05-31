@@ -1,12 +1,9 @@
 param(
   [Parameter(Mandatory = $true)]
-  [string]$InputPdf,
+  [string]$InputFile,
 
   [Parameter(Mandatory = $true)]
   [string]$OutputPath,
-
-  [ValidateSet("high", "standard", "medium", "low")]
-  [string]$Level = "standard",
 
   [int]$TimeoutSeconds = 180,
 
@@ -26,7 +23,7 @@ $ErrorActionPreference = "Stop"
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
 function ConvertTo-JsonLine($Object) {
-  $Object | ConvertTo-Json -Compress -Depth 6
+  $Object | ConvertTo-Json -Compress -Depth 8
 }
 
 function New-Text {
@@ -142,14 +139,14 @@ function Close-NewWpsArtifacts {
   return @($events)
 }
 
-function Close-UiaCompressWindows {
+function Close-UiaSlimWindows {
   param(
     [hashtable]$BeforeProcesses,
     [int]$TimeoutSeconds = 10
   )
 
   $events = @()
-  $compressTitle = "PDF" + (New-Text -CodePoints @(0x538B, 0x7F29))
+  $slimTitle = New-Text -CodePoints @(0x6587, 0x4EF6, 0x7626, 0x8EAB)
 
   Add-Type -AssemblyName UIAutomationClient,UIAutomationTypes -ErrorAction SilentlyContinue
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
@@ -164,7 +161,7 @@ function Close-UiaCompressWindows {
       try { $name = $win.Current.Name } catch {}
       try { $windowProcessId = $win.Current.ProcessId } catch {}
 
-      if ($name -ne $compressTitle) {
+      if ($name -ne $slimTitle) {
         continue
       }
 
@@ -184,7 +181,7 @@ function Close-UiaCompressWindows {
 
       $proc = Get-Process -Id $windowProcessId -ErrorAction SilentlyContinue
       $isNew = $windowProcessId -and (-not $BeforeProcesses.ContainsKey([int]$windowProcessId))
-      if ($isNew -and $proc -and $proc.MainWindowTitle -eq $compressTitle) {
+      if ($isNew -and $proc -and $proc.MainWindowTitle -eq $slimTitle) {
         if (Stop-ProcessIfRunning -ProcessId $windowProcessId) {
           $closedAny = $true
           $events += [pscustomobject]@{
@@ -208,7 +205,7 @@ function Close-UiaCompressWindows {
   return @($events)
 }
 
-function Start-WpsPdfCompress {
+function Start-WpsFileSlim {
   param([Parameter(Mandatory = $true)][string]$Path)
 
   $resolvedWpsExe = $WpsExe
@@ -225,11 +222,11 @@ function Start-WpsPdfCompress {
 
   $args = @(
     "Run",
-    "/InstanceId=batchcompress",
+    "/InstanceId=kdocumentslimming",
     $resolvedFramework,
-    "/appId=batchcompress",
-    "/appname=PDF Compress",
-    "/size=960&670",
+    "/appId=kdocumentslimming",
+    "/appname=$(New-Text -CodePoints @(0x6587, 0x4EF6, 0x7626, 0x8EAB))",
+    "/size=980,680",
     "/src=office_tools_package",
     "/switchskin=0",
     "/file=$Path"
@@ -246,15 +243,15 @@ function Start-WpsPdfCompress {
   }
 }
 
-function Invoke-CompressStartButton {
-  param([string]$Level, [int]$TimeoutSeconds = 45)
+function Invoke-FileSlimStartButton {
+  param([int]$TimeoutSeconds = 45)
 
   $code = @'
 using System;
 using System.Windows.Automation;
 using System.Threading;
 
-public class WpsPdfCompressAutomation {
+public class WpsFileSlimAutomation {
   static string FromCodes(int[] codes) {
     char[] chars = new char[codes.Length];
     for (int i = 0; i < codes.Length; i++) chars[i] = (char)codes[i];
@@ -276,22 +273,24 @@ public class WpsPdfCompressAutomation {
       ((SelectionItemPattern)pattern).Select();
       return true;
     }
+    if (element.TryGetCurrentPattern(TogglePattern.Pattern, out pattern)) {
+      ((TogglePattern)pattern).Toggle();
+      return true;
+    }
     return false;
   }
 
-  public static int Invoke(string levelName, int timeoutSeconds) {
-    string windowTitle = "PDF" + FromCodes(new int[] { 0x538B, 0x7F29 });
-    string startText = FromCodes(new int[] { 0x5F00, 0x59CB, 0x538B, 0x7F29 });
+  public static int Invoke(int timeoutSeconds) {
+    string windowTitle = FromCodes(new int[] { 0x6587, 0x4EF6, 0x7626, 0x8EAB });
+    string copyText = FromCodes(new int[] { 0x53E6, 0x5B58, 0x4E3A, 0x526F, 0x672C });
+    string startText = FromCodes(new int[] { 0x5F00, 0x59CB, 0x7626, 0x8EAB });
     DateTime deadline = DateTime.Now.AddSeconds(timeoutSeconds);
     while (DateTime.Now < deadline) {
       var root = AutomationElement.RootElement;
       var win = root.FindFirst(TreeScope.Children, new PropertyCondition(AutomationElement.NameProperty, windowTitle));
       if (win != null) {
-        if (!String.IsNullOrWhiteSpace(levelName)) {
-          var level = FindByName(win, levelName);
-          TryInvoke(level);
-          Thread.Sleep(300);
-        }
+        TryInvoke(FindByName(win, copyText));
+        Thread.Sleep(300);
 
         var start = FindByName(win, startText);
         if (TryInvoke(start)) return 0;
@@ -306,17 +305,9 @@ public class WpsPdfCompressAutomation {
 
   Add-Type -TypeDefinition $code -ReferencedAssemblies UIAutomationClient,UIAutomationTypes -ErrorAction SilentlyContinue
 
-  $levelName = switch ($Level) {
-    "high" { New-Text -CodePoints @(0x9AD8, 0x54C1, 0x8D28) }
-    "standard" { New-Text -CodePoints @(0x6807, 0x51C6, 0x54C1, 0x8D28) }
-    "medium" { New-Text -CodePoints @(0x4E2D, 0x7B49, 0x54C1, 0x8D28) }
-    "low" { New-Text -CodePoints @(0x4F4E, 0x54C1, 0x8D28) }
-    default { New-Text -CodePoints @(0x6807, 0x51C6, 0x54C1, 0x8D28) }
-  }
-
-  $result = [WpsPdfCompressAutomation]::Invoke($levelName, $TimeoutSeconds)
+  $result = [WpsFileSlimAutomation]::Invoke($TimeoutSeconds)
   if ($result -ne 0) {
-    throw "Unable to invoke WPS PDF compress start button. Code: $result"
+    throw "Unable to invoke WPS file slimming start button. Code: $result"
   }
 }
 
@@ -357,22 +348,87 @@ function Wait-FileReady {
   throw "Timed out waiting for output file: $Path"
 }
 
-$inputPath = (Resolve-Path -LiteralPath $InputPdf).Path
-if ([IO.Path]::GetExtension($inputPath).ToLowerInvariant() -ne ".pdf") {
-  throw "Input must be a PDF: $inputPath"
+function Wait-SlimOutputReady {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$ExpectedPath,
+    [Parameter(Mandatory = $true)]
+    [string]$InputPath,
+    [long]$OriginalLength,
+    [int]$TimeoutSeconds = 180,
+    [datetime]$NotBefore = [datetime]::MinValue
+  )
+
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  $lastKey = ""
+  $stableCount = 0
+
+  while ((Get-Date) -lt $deadline) {
+    $candidates = @()
+
+    if (Test-Path -LiteralPath $ExpectedPath) {
+      $candidates += Get-Item -LiteralPath $ExpectedPath
+    }
+
+    if (Test-Path -LiteralPath $InputPath) {
+      $inputItem = Get-Item -LiteralPath $InputPath
+      if ($inputItem.LastWriteTime -ge $NotBefore -and $inputItem.Length -gt 0 -and $inputItem.Length -ne $OriginalLength) {
+        $candidates += $inputItem
+      }
+    }
+
+    $dir = Split-Path $InputPath -Parent
+    $ext = [IO.Path]::GetExtension($InputPath)
+    $prefix = New-Text -CodePoints @(0x5DF2, 0x7626, 0x8EAB) -Prefix "(" -Suffix ")"
+    if (Test-Path -LiteralPath $dir) {
+      $candidates += @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
+        Where-Object {
+          $_.LastWriteTime -ge $NotBefore -and
+          $_.Length -gt 0 -and
+          $_.Extension.ToLowerInvariant() -eq $ext.ToLowerInvariant() -and
+          $_.Name.StartsWith($prefix)
+        })
+    }
+
+    $candidate = @($candidates | Sort-Object LastWriteTime -Descending | Select-Object -First 1)
+    if ($candidate.Count -gt 0) {
+      $item = $candidate[0]
+      $key = "$($item.FullName)|$($item.Length)|$($item.LastWriteTimeUtc.Ticks)"
+      if ($key -eq $lastKey) {
+        $stableCount += 1
+      } else {
+        $stableCount = 0
+        $lastKey = $key
+      }
+
+      if ($stableCount -ge 2) {
+        return $item
+      }
+    }
+
+    Start-Sleep -Seconds 1
+  }
+
+  throw "Timed out waiting for slimmed output near: $ExpectedPath"
 }
 
+$inputPath = (Resolve-Path -LiteralPath $InputFile).Path
 $finalOutputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputPath)
-if ([IO.Path]::GetExtension($finalOutputPath).ToLowerInvariant() -ne ".pdf") {
-  throw "OutputPath must end with .pdf: $finalOutputPath"
+
+if ([IO.Path]::GetExtension($finalOutputPath).ToLowerInvariant() -ne [IO.Path]::GetExtension($inputPath).ToLowerInvariant()) {
+  throw "OutputPath extension must match input file extension: $finalOutputPath"
+}
+
+if ($finalOutputPath -eq $inputPath) {
+  throw "OutputPath must not be the same as InputFile: $finalOutputPath"
 }
 
 if ((Test-Path -LiteralPath $finalOutputPath) -and -not $Overwrite) {
   throw "Output already exists. Pass -Overwrite to replace it: $finalOutputPath"
 }
 
-$compressedPrefix = New-Text -CodePoints @(0xFF08, 0x5DF2, 0x538B, 0x7F29, 0xFF09)
-$expectedOutputPath = Join-Path (Split-Path $inputPath -Parent) ($compressedPrefix + [IO.Path]::GetFileName($inputPath))
+$slimmedPrefix = New-Text -CodePoints @(0x5DF2, 0x7626, 0x8EAB) -Prefix "(" -Suffix ")"
+$expectedOutputPath = Join-Path (Split-Path $inputPath -Parent) ($slimmedPrefix + [IO.Path]::GetFileName($inputPath))
 if ((Test-Path -LiteralPath $expectedOutputPath) -and -not $Overwrite) {
   throw "Default WPS output already exists. Pass -Overwrite or remove it first: $expectedOutputPath"
 }
@@ -382,17 +438,18 @@ if ((Test-Path -LiteralPath $expectedOutputPath) -and $Overwrite) {
 
 $beforeProcesses = Get-ProcessSnapshot
 $startedAt = Get-Date
+$inputItemBefore = Get-Item -LiteralPath $inputPath
 $cleanupEvents = @()
 $runner = $null
 $output = $null
 try {
-  $runner = Start-WpsPdfCompress -Path $inputPath
-  Invoke-CompressStartButton -Level $Level
-  $output = Wait-FileReady -Path $expectedOutputPath -TimeoutSeconds $TimeoutSeconds -NotBefore $startedAt
+  $runner = Start-WpsFileSlim -Path $inputPath
+  Invoke-FileSlimStartButton
+  $output = Wait-SlimOutputReady -ExpectedPath $expectedOutputPath -InputPath $inputPath -OriginalLength $inputItemBefore.Length -TimeoutSeconds $TimeoutSeconds -NotBefore $startedAt
 } finally {
   if (-not $NoCleanup) {
     $cleanupEvents = @(
-      Close-UiaCompressWindows -BeforeProcesses $beforeProcesses -TimeoutSeconds ([Math]::Min($CleanupSeconds, 10))
+      Close-UiaSlimWindows -BeforeProcesses $beforeProcesses -TimeoutSeconds ([Math]::Min($CleanupSeconds, 10))
       Close-NewWpsArtifacts -BeforeProcesses $beforeProcesses -TimeoutSeconds $CleanupSeconds
     )
   }
@@ -409,10 +466,9 @@ $inputItem = Get-Item -LiteralPath $inputPath
 ConvertTo-JsonLine ([pscustomobject]@{
   ok = $true
   backend = "wps-uia"
-  command = "pdf.compress"
+  command = "file.slim"
   input = $inputPath
   output = $output.FullName
-  level = $Level
   inputLength = $inputItem.Length
   length = $output.Length
   savedBytes = $inputItem.Length - $output.Length

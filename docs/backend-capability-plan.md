@@ -91,7 +91,9 @@ Initial UIA-only candidates:
 | PDF to Word through WPS member converter | Exposed as WPS product PDF UI and shell/native runner, not a documented JSAPI | Implemented as `office-tools pdf to-word --backend wps-uia` |
 | PDF to Excel/PPT variants | Same PDF conversion window exposes conversion modes | Implemented as `office-tools pdf to-excel` and `office-tools pdf to-ppt` |
 | PDF compression | WPS exposes a dedicated `PDF压缩` desktop tool with quality choices | Implemented as `office-tools pdf compress --out output.pdf --level standard` |
-| PDF to image/image-PDF variants | Shell menu exposes entries, but output behavior still needs verification | Keep as research until action and output names are verified |
+| PDF to image-PDF variant | WPS conversion window exposes `ConvertToImgPDF` and generates `_扫描版.pdf` | Implemented as `office-tools pdf to-image-pdf` |
+| File slimming | WPS exposes a dedicated `文件瘦身` desktop tool with stable start/copy controls | Implemented as `office-tools file slim --out output` |
+| PDF to image variants | Shell menu exposes entries, but output behavior still needs verification | Keep as research until action and output names are verified |
 | Scanned PDF OCR conversion | Product converter performs OCR after user authorization | Extend PDF conversion backend with OCR diagnostics |
 | PDF merge/split/encrypt tools | WPS PDF toolbox UI, member gated in many installs | Add per-flow UI tree snapshots before automation |
 | UI-only export/settings dialogs | Some product settings are not surfaced through COM/JSAPI | Add `dump`, `find-window`, and dry-run diagnostics first |
@@ -128,18 +130,24 @@ Implemented follow-up:
 
 - `pdf to-excel` and `pdf to-ppt` reuse the PDF conversion window with verified
   output extensions and cleanup.
+- `pdf to-image-pdf` reuses the PDF conversion window with verified `_扫描版.pdf`
+  output naming and cleanup.
 - `pdf compress` uses the WPS `batchcompress` app, supports exact `--out`, and
   exposes only product-level quality values: `high`, `standard`, `medium`,
   and `low`.
+- `file slim` uses the WPS `kdocumentslimming` app, supports exact `--out`,
+  keeps the source safe by selecting copy output, and waits for WPS'
+  `(已瘦身)<name>` default artifact.
 
 Parameter discovery still needed:
 
-- Observe WPS process command lines for PDF to image/image-PDF, text, merge,
-  split, and OCR flows.
+- Observe WPS process command lines for PDF to image, text, and OCR flows.
 - Check whether output directory, page range, language, OCR mode, and output
   format can be passed in app params or runner params.
 - Add UIA setting controls only after the corresponding stable control names are
   dumped and versioned.
+- For `file slim`, expose custom slimming settings only after Word, Excel,
+  PowerPoint, and PDF setting panels are separately verified.
 
 Milestones:
 

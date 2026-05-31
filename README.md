@@ -9,13 +9,13 @@
 - **WPS COM**：用于真实 WPS 应用对象模型、打开、保存、导出等行为。
 - **WPS UIA**：用于只能通过 WPS 桌面界面使用的产品能力，例如 PDF 转 Office、OCR、压缩等。
 
-当前已经落地的是 WPS UI Automation 后端里的 PDF 转 Office 与 PDF 压缩能力。
+当前已经落地的是 WPS UI Automation 后端里的 PDF 转 Office、图片型 PDF、PDF 压缩与文件瘦身能力。
 
 ## 当前状态
 
 - npm workspace 包结构
 - `office-tools` CLI 原型
-- WPS UIA PDF 转 Word / Excel / PPT / 压缩
+- WPS UIA PDF 转 Word / Excel / PPT / 图片型 PDF / 压缩 / 文件瘦身
 - OfficeCLI / WPS JSAPI / WPS UIA 能力规划
 - WPS 插件桥接和 RPC 调用原型
 - Windows 桌面 WPS 自动化诊断脚本
@@ -40,6 +40,7 @@ node packages/cli/bin/office-tools.js capabilities
 node packages/cli/bin/office-tools.js pdf to-word C:\path\input.pdf --out C:\path\output.docx
 node packages/cli/bin/office-tools.js pdf to-excel C:\path\input.pdf --out C:\path\output.xlsx
 node packages/cli/bin/office-tools.js pdf to-ppt C:\path\input.pdf --out C:\path\output.pptx
+node packages/cli/bin/office-tools.js pdf to-image-pdf C:\path\input.pdf --out C:\path\output.pdf
 ```
 
 常用参数：
@@ -71,6 +72,16 @@ node packages/cli/bin/office-tools.js pdf compress C:\path\input.pdf `
 ```
 
 `--level` 支持 `high`、`standard`、`medium`、`low`。默认使用 `standard`。命令会在临时目录中运行 WPS 压缩器，再把产物移动到 `--out` 指定位置，并清理本次任务打开的 `PDF压缩` 窗口。
+
+## 文件瘦身
+
+使用 WPS 的文件瘦身工具减小 Office/PDF 文件体积：
+
+```powershell
+node packages/cli/bin/office-tools.js file slim C:\path\input.pdf --out C:\path\slimmed.pdf --overwrite
+```
+
+命令会在临时目录中运行 WPS 文件瘦身，等待默认产物 `(已瘦身)<文件名>`，再移动到 `--out` 指定位置，并清理本次任务打开的 `文件瘦身` 和 `WPS Office` 窗口。
 
 调试 WPS UI 时可以使用：
 
@@ -105,13 +116,20 @@ node packages/cli/bin/office-tools.js wps-uia windows
 - `pdf to-word`
 - `pdf to-excel`
 - `pdf to-ppt`
+- `pdf to-image-pdf`
 - `pdf compress`
+- `file slim`
 
 已经探索但暂不产品化：
 
 - `image ocr` / `image to-excel`：入口存在，但当前 UI 主要是 WebView，未观察到稳定无人工输出闭环。
 - `image to-pdf`：右键动词存在，但 Shell 动词调用在本机探测中会卡住，暂不包装成 CLI。
 - `ofd to-pdf`：入口存在，但本机验证只打开 OFD 容器，未观察到默认输出文件。
+- `pdf split` / `pdf merge`：入口存在且可打开 `WPS PDF转换` 窗口，但本地库更适合做稳定 CLI；UIA 暂作为备选研究路线。
+
+新增诊断能力：
+
+- `wps-uia dump-window --title <text>`：输出 UIA 窗口控件树，用于判断新 WPS 工具是否有稳定控件和可自动化闭环。
 
 不优先做成稳定 CLI：
 

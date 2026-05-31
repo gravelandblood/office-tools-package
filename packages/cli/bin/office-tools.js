@@ -5,12 +5,15 @@ import {
   capabilities as wpsUiaCapabilities,
   compressPdf,
   convertPdfToExcel,
+  convertPdfToImagePdf,
   convertPdfToPpt,
   convertPdfToWord,
   convertPdfToWordRaw,
+  dumpWindow,
   getEnvironment,
   listPdfVerbs,
-  listWindows
+  listWindows,
+  slimFile
 } from "@office-tools/backend-wps-uia";
 
 function printJson(value) {
@@ -25,10 +28,13 @@ Usage:
   office-tools pdf to-word <input.pdf> --out <output.docx> [options]
   office-tools pdf to-excel <input.pdf> --out <output.xlsx> [options]
   office-tools pdf to-ppt <input.pdf> --out <output.pptx> [options]
+  office-tools pdf to-image-pdf <input.pdf> --out <output.pdf> [options]
   office-tools pdf compress <input.pdf> --out <output.pdf> [options]
+  office-tools file slim <input> --out <output> [options]
   office-tools wps-uia env
   office-tools wps-uia verbs <input.pdf>
   office-tools wps-uia windows
+  office-tools wps-uia dump-window [options]
   office-tools wps-uia raw pdf-converter <input.pdf> [options]
 
 PDF options:
@@ -40,6 +46,16 @@ PDF options:
   --cleanup-seconds <seconds>    Wait time for cleanup. Default: 20.
   --level <high|standard|medium|low>
                                   Compression quality. Default: standard.
+  --overwrite                    Replace an existing output file.
+  --verbose                      Include staging diagnostics.
+
+File options:
+  --out <path>                   Output path.
+  --output <path>                Deprecated alias for --out.
+  --backend <auto|wps-uia>       Backend to use. Default: auto.
+  --timeout <seconds>            Wait time for the output file. Default: 180.
+  --cleanup <auto|always|never>  Cleanup policy for UIA windows. Default: auto.
+  --cleanup-seconds <seconds>    Wait time for cleanup. Default: 20.
   --overwrite                    Replace an existing output file.
   --verbose                      Include staging diagnostics.
 
@@ -63,6 +79,12 @@ Raw WPS UIA options:
   --runner-param <key=value>     Extra WPS runner /key=value parameter. Can repeat.
   --runner-arg <value>           Raw extra WPS runner argument. Can repeat.
   --cloud-arg <value>            Raw extra WPS cloud runner argument. Can repeat.
+
+WPS UIA diagnostics:
+  --title <text>                 Dump windows whose title contains text.
+  --process-id <pid>             Dump a specific process window.
+  --max-depth <number>           Maximum UIA tree depth. Default: 6.
+  --all                          Dump all top-level windows.
 `);
 }
 
@@ -192,6 +214,61 @@ function parsePdfCompress(argv) {
   return { input, options };
 }
 
+function parseFileSlim(argv) {
+  const input = argv[0];
+  if (!input || input.startsWith("--")) {
+    throw new Error("input file is required");
+  }
+
+  const options = {};
+  let backend = "auto";
+
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--backend":
+        backend = readOption(argv, i);
+        i += 1;
+        break;
+      case "--out":
+      case "--output":
+        options.outPath = readOption(argv, i);
+        i += 1;
+        break;
+      case "--timeout":
+        options.timeoutSeconds = Number(readOption(argv, i));
+        i += 1;
+        break;
+      case "--cleanup":
+        options.cleanup = readOption(argv, i);
+        i += 1;
+        break;
+      case "--cleanup-seconds":
+        options.cleanupSeconds = Number(readOption(argv, i));
+        i += 1;
+        break;
+      case "--overwrite":
+        options.overwrite = true;
+        break;
+      case "--verbose":
+        options.verbose = true;
+        break;
+      default:
+        throw new Error(`Unknown file slim option: ${arg}`);
+    }
+  }
+
+  if (backend !== "auto" && backend !== "wps-uia") {
+    throw new Error(`Unsupported backend for file slim: ${backend}`);
+  }
+
+  if (!options.outPath) {
+    throw new Error("file slim requires --out <output>");
+  }
+
+  return { input, options };
+}
+
 function parseRawPdfConverter(argv) {
   const input = argv[0];
   if (!input || input.startsWith("--")) {
@@ -306,6 +383,43 @@ function parseRawPdfConverter(argv) {
   return { input, options };
 }
 
+function parseDumpWindow(argv) {
+  const options = {};
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--title":
+        options.title = readOption(argv, i);
+        i += 1;
+        break;
+      case "--process-id":
+        options.processId = Number(readOption(argv, i));
+        i += 1;
+        break;
+      case "--max-depth":
+        options.maxDepth = Number(readOption(argv, i));
+        i += 1;
+        break;
+      case "--timeout":
+        options.timeoutSeconds = Number(readOption(argv, i));
+        i += 1;
+        break;
+      case "--all":
+        options.all = true;
+        break;
+      default:
+        throw new Error(`Unknown wps-uia dump-window option: ${arg}`);
+    }
+  }
+
+  if (!options.all && !options.title && !options.processId) {
+    throw new Error("wps-uia dump-window requires --title <text>, --process-id <pid>, or --all");
+  }
+
+  return options;
+}
+
 async function main() {
   const [domain, command, subcommand, ...rest] = process.argv.slice(2);
   if (!domain || domain === "--help" || domain === "-h") {
@@ -343,9 +457,21 @@ async function main() {
     return;
   }
 
+  if (domain === "pdf" && command === "to-image-pdf") {
+    const { input, options } = parsePdfConversion(command, [subcommand, ...rest]);
+    printJson(await convertPdfToImagePdf(input, options));
+    return;
+  }
+
   if (domain === "pdf" && command === "compress") {
     const { input, options } = parsePdfCompress([subcommand, ...rest]);
     printJson(await compressPdf(input, options));
+    return;
+  }
+
+  if (domain === "file" && command === "slim") {
+    const { input, options } = parseFileSlim([subcommand, ...rest]);
+    printJson(await slimFile(input, options));
     return;
   }
 
@@ -362,6 +488,11 @@ async function main() {
 
   if (domain === "wps-uia" && command === "windows") {
     printJson(await listWindows());
+    return;
+  }
+
+  if (domain === "wps-uia" && command === "dump-window") {
+    printJson(await dumpWindow(parseDumpWindow([subcommand, ...rest].filter(Boolean))));
     return;
   }
 
