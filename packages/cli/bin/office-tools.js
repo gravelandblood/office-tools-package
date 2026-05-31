@@ -5,6 +5,7 @@ import {
   compareFormat,
   inferFormatTemplate,
   inspectFormat,
+  profileDocx,
   renderTemplate
 } from "@office-tools/backend-template";
 import { capabilities as wpsJsapiCapabilities } from "@office-tools/backend-wps-jsapi";
@@ -39,6 +40,7 @@ Usage:
   office-tools pdf compress <input.pdf> --out <output.pdf> [options]
   office-tools file slim <input> --out <output> [options]
   office-tools template inspect-format <input.docx> [options]
+  office-tools template profile <input.docx> [options]
   office-tools template infer-format <input.docx> --out-template <template.docx> --out-data <data.json> --out-profile <profile.json>
   office-tools template render <template.docx> --data <data.json> --out <output.docx>
   office-tools template compare-format <left.docx> <right.docx> [options]
@@ -76,6 +78,7 @@ Template options:
   --out-data <path>              Generated JSON data path.
   --out-profile <path>           Generated JSON format profile path.
   --data <path>                  JSON data for rendering.
+  --summary                      Print only profile summary and signals.
   --include-text                 Include extracted text in compare output.
 
 Raw WPS UIA options:
@@ -469,6 +472,32 @@ function parseTemplateInfer(argv) {
   return { input, options };
 }
 
+function parseTemplateProfile(argv) {
+  const input = argv[0];
+  if (!input || input.startsWith("--")) {
+    throw new Error("template profile requires <input.docx>");
+  }
+
+  const options = {};
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--out":
+      case "--output":
+        options.outputPath = readOption(argv, i);
+        i += 1;
+        break;
+      case "--summary":
+        options.summary = true;
+        break;
+      default:
+        throw new Error(`Unknown template profile option: ${arg}`);
+    }
+  }
+
+  return { input, options };
+}
+
 function parseTemplateRender(argv) {
   const input = argv[0];
   if (!input || input.startsWith("--")) {
@@ -577,6 +606,12 @@ async function main() {
   if (domain === "template" && command === "inspect-format") {
     if (!subcommand) throw new Error("template inspect-format requires <input.docx>");
     printJson(await inspectFormat(subcommand));
+    return;
+  }
+
+  if (domain === "template" && command === "profile") {
+    const { input, options } = parseTemplateProfile([subcommand, ...rest]);
+    printJson(await profileDocx(input, options));
     return;
   }
 

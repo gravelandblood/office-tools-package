@@ -1,0 +1,4 @@
+interface:
+  display_name: "Template Detective"
+  short_description: "Infer and validate reusable DOCX templates from examples"
+  default_prompt: "Infer a reusable DOCX template from the provided examples. Extract deterministic profiles first, induce slots/loops/conditionals with evidence, render candidates, and report conflicts instead of hiding ambiguity."

@@ -104,10 +104,20 @@ async function main() {
   const template = path.join(tempDir, "template.docx");
   const data = path.join(tempDir, "data.json");
   const profile = path.join(tempDir, "profile.json");
+  const detectiveProfile = path.join(tempDir, "detective-profile.json");
   const rendered = path.join(tempDir, "rendered.docx");
 
   await writeSampleDocx(sample);
   parseJson(await run(["template", "inspect-format", sample]));
+  const profiled = parseJson(await run(["template", "profile", sample, "--out", detectiveProfile, "--summary"]));
+  if (profiled.profile.summary.counts.paragraphs < 4 || profiled.profile.summary.counts.tables !== 1) {
+    throw new Error(`Unexpected template profile summary: ${JSON.stringify(profiled, null, 2)}`);
+  }
+  const fullProfile = JSON.parse(await fs.readFile(detectiveProfile, "utf8"));
+  const detailedPart = fullProfile.parts?.find((part) => part.paragraphs?.some((paragraph) => paragraph.runs?.length));
+  if (!detailedPart || !Array.isArray(fullProfile.signals)) {
+    throw new Error("Template profile did not include detailed paragraphs, runs, and signals.");
+  }
   const inferred = parseJson(await run([
     "template", "infer-format", sample,
     "--out-template", template,

@@ -7,6 +7,7 @@ const WORD_TEXT_PART = /^word\/(document|footnotes|endnotes|comments)\.xml$|^wor
 const XML_DECLARATION = /^<\?xml[^>]*>\s*/u;
 const TEXT_NODE_RE = /<w:t\b([^>]*)>([\s\S]*?)<\/w:t>/gu;
 const TAG_RE = /<[^>]+>/gu;
+const PARSED_TEXT_KEYS = new Set(["w:t", "w:delText", "w:instrText", "w:delInstrText"]);
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -35,6 +36,10 @@ export const capabilities = {
     {
       id: "template.inspectFormat",
       description: "Inspect DOCX structure and formatting fingerprints."
+    },
+    {
+      id: "template.profile",
+      description: "Extract a normalized DOCX template-detection profile with evidence, formatting atoms, and conflict signals."
     }
   ]
 };
@@ -166,6 +171,344 @@ function stripText(obj) {
   return out;
 }
 
+function stripEmpty(value) {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (Array.isArray(value)) {
+    const items = value.map(stripEmpty).filter((item) => item !== undefined);
+    return items.length ? items : undefined;
+  }
+  if (typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      const next = stripEmpty(item);
+      if (next !== undefined) out[key] = next;
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+  return value;
+}
+
+function cloneJson(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function firstVal(node, key, attr = "w:val") {
+  const item = asArray(node?.[key])[0];
+  if (item === undefined || item === null) return null;
+  if (typeof item === "string") return item;
+  if (typeof item === "object" && attr in item) return item[attr];
+  return null;
+}
+
+function profileProps(value) {
+  return stripEmpty(cloneJson(value)) || null;
+}
+
+function hasKeyDeep(node, key) {
+  if (!node || typeof node !== "object") return false;
+  if (Array.isArray(node)) return node.some((item) => hasKeyDeep(item, key));
+  if (Object.prototype.hasOwnProperty.call(node, key)) return true;
+  return Object.values(node).some((value) => hasKeyDeep(value, key));
+}
+
+function collectNodesByKey(node, key, result = []) {
+  if (!node || typeof node !== "object") return result;
+  if (Array.isArray(node)) {
+    for (const item of node) collectNodesByKey(item, key, result);
+    return result;
+  }
+  if (node[key]) {
+    for (const item of asArray(node[key])) result.push(item);
+  }
+  for (const value of Object.values(node)) collectNodesByKey(value, key, result);
+  return result;
+}
+
+function collectRunsFromParagraph(paragraph, partName, paragraphIndex) {
+  return asArray(paragraph["w:r"]).map((run, index) => {
+    const text = extractTextFromParsed(run);
+    const rPr = profileProps(run["w:rPr"]);
+    return {
+      id: `r${String(paragraphIndex + 1).padStart(4, "0")}.${String(index + 1).padStart(3, "0")}`,
+      index,
+      text,
+      textLength: text.length,
+      rPr,
+      styleId: firstVal(run["w:rPr"], "w:rStyle"),
+      formatFingerprint: hashFingerprint(rPr || {}),
+      structureFingerprint: hashFingerprint(stripText(run)),
+      flags: {
+        hasDrawing: hasKeyDeep(run, "w:drawing"),
+        hasPicture: hasKeyDeep(run, "w:pict"),
+        hasField: hasKeyDeep(run, "w:fldChar") || hasKeyDeep(run, "w:instrText"),
+        hasTab: hasKeyDeep(run, "w:tab"),
+        hasBreak: hasKeyDeep(run, "w:br")
+      },
+      evidence: {
+        part: partName,
+        path: `paragraphs[${paragraphIndex}].runs[${index}]`
+      }
+    };
+  });
+}
+
+function paragraphProfile(paragraph, partName, index) {
+  const pPr = profileProps(paragraph["w:pPr"]);
+  const text = extractTextFromParsed(paragraph);
+  const runs = collectRunsFromParagraph(paragraph, partName, index);
+  return {
+    id: `p${String(index + 1).padStart(4, "0")}`,
+    part: partName,
+    index,
+    text,
+    textLength: text.length,
+    styleId: firstVal(paragraph["w:pPr"], "w:pStyle"),
+    numbering: profileProps(paragraph["w:pPr"]?.["w:numPr"]),
+    alignment: firstVal(paragraph["w:pPr"], "w:jc"),
+    spacing: profileProps(paragraph["w:pPr"]?.["w:spacing"]),
+    indent: profileProps(paragraph["w:pPr"]?.["w:ind"]),
+    pPr,
+    runCount: runs.length,
+    runs,
+    formatFingerprint: hashFingerprint(stripText(paragraph)),
+    paragraphPropertiesFingerprint: hashFingerprint(pPr || {}),
+    contentFingerprint: hashFingerprint(text),
+    flags: {
+      hasDrawing: hasKeyDeep(paragraph, "w:drawing"),
+      hasPicture: hasKeyDeep(paragraph, "w:pict"),
+      hasField: hasKeyDeep(paragraph, "w:fldChar") || hasKeyDeep(paragraph, "w:instrText"),
+      hasBookmark: hasKeyDeep(paragraph, "w:bookmarkStart") || hasKeyDeep(paragraph, "w:bookmarkEnd")
+    },
+    evidence: {
+      part: partName,
+      path: `paragraphs[${index}]`
+    }
+  };
+}
+
+function tableProfile(table, partName, index) {
+  const rows = asArray(table["w:tr"]).map((row, rowIndex) => {
+    const cells = asArray(row["w:tc"]).map((cell, cellIndex) => {
+      const paragraphs = collectNodesByKey(cell, "w:p", []);
+      const tcPr = profileProps(cell["w:tcPr"]);
+      return {
+        index: cellIndex,
+        text: extractTextFromParsed(cell),
+        paragraphCount: paragraphs.length,
+        tcPr,
+        width: profileProps(cell["w:tcPr"]?.["w:tcW"]),
+        gridSpan: firstVal(cell["w:tcPr"], "w:gridSpan"),
+        vMerge: firstVal(cell["w:tcPr"], "w:vMerge"),
+        shading: profileProps(cell["w:tcPr"]?.["w:shd"]),
+        borders: profileProps(cell["w:tcPr"]?.["w:tcBorders"]),
+        formatFingerprint: hashFingerprint(stripText(cell)),
+        cellPropertiesFingerprint: hashFingerprint(tcPr || {})
+      };
+    });
+    const trPr = profileProps(row["w:trPr"]);
+    return {
+      index: rowIndex,
+      cellCount: cells.length,
+      text: extractTextFromParsed(row),
+      trPr,
+      cells,
+      formatFingerprint: hashFingerprint(stripText(row)),
+      rowPropertiesFingerprint: hashFingerprint(trPr || {})
+    };
+  });
+  const tblPr = profileProps(table["w:tblPr"]);
+  const tblGrid = profileProps(table["w:tblGrid"]);
+  return {
+    id: `tbl${String(index + 1).padStart(4, "0")}`,
+    part: partName,
+    index,
+    rowCount: rows.length,
+    columnCount: Math.max(0, ...rows.map((row) => row.cellCount)),
+    textLength: extractTextFromParsed(table).length,
+    tblPr,
+    tblGrid,
+    rows,
+    formatFingerprint: hashFingerprint(stripText(table)),
+    tablePropertiesFingerprint: hashFingerprint({ tblPr, tblGrid }),
+    evidence: {
+      part: partName,
+      path: `tables[${index}]`
+    }
+  };
+}
+
+function collectDetailedParagraphs(parsedPart, partName) {
+  return collectNodesByKey(parsedPart, "w:p", []).map((paragraph, index) => (
+    paragraphProfile(paragraph, partName, index)
+  ));
+}
+
+function collectDetailedTables(parsedPart, partName) {
+  return collectNodesByKey(parsedPart, "w:tbl", []).map((table, index) => (
+    tableProfile(table, partName, index)
+  ));
+}
+
+function collectStyles(stylesXml) {
+  if (!stylesXml) return [];
+  const parsed = parseXmlPart(stylesXml);
+  return asArray(parsed["w:styles"]?.["w:style"]).map((style, index) => {
+    const pPr = profileProps(style["w:pPr"]);
+    const rPr = profileProps(style["w:rPr"]);
+    const tblPr = profileProps(style["w:tblPr"]);
+    return {
+      index,
+      styleId: style["w:styleId"] || null,
+      type: style["w:type"] || null,
+      name: firstVal(style, "w:name"),
+      basedOn: firstVal(style, "w:basedOn"),
+      next: firstVal(style, "w:next"),
+      linked: firstVal(style, "w:link"),
+      aliases: firstVal(style, "w:aliases"),
+      isDefault: style["w:default"] === "1" || style["w:default"] === "true",
+      pPr,
+      rPr,
+      tblPr,
+      fingerprint: hashFingerprint(stripText(style))
+    };
+  });
+}
+
+function collectNumbering(numberingXml) {
+  if (!numberingXml) return { abstractNums: [], nums: [] };
+  const parsed = parseXmlPart(numberingXml);
+  const numbering = parsed["w:numbering"] || {};
+  return {
+    abstractNums: asArray(numbering["w:abstractNum"]).map((item, index) => ({
+      index,
+      abstractNumId: item["w:abstractNumId"] || null,
+      levelCount: asArray(item["w:lvl"]).length,
+      levels: asArray(item["w:lvl"]).map((level) => ({
+        ilvl: level["w:ilvl"] || null,
+        numFmt: firstVal(level, "w:numFmt"),
+        lvlText: firstVal(level, "w:lvlText"),
+        start: firstVal(level, "w:start"),
+        pPr: profileProps(level["w:pPr"]),
+        rPr: profileProps(level["w:rPr"]),
+        fingerprint: hashFingerprint(stripText(level))
+      })),
+      fingerprint: hashFingerprint(stripText(item))
+    })),
+    nums: asArray(numbering["w:num"]).map((item, index) => ({
+      index,
+      numId: item["w:numId"] || null,
+      abstractNumId: firstVal(item, "w:abstractNumId"),
+      fingerprint: hashFingerprint(stripText(item))
+    }))
+  };
+}
+
+function collectSections(parsedPart, partName) {
+  return collectNodesByKey(parsedPart, "w:sectPr", []).map((section, index) => ({
+    id: `sect${String(index + 1).padStart(4, "0")}`,
+    part: partName,
+    index,
+    pageSize: profileProps(section["w:pgSz"]),
+    pageMargins: profileProps(section["w:pgMar"]),
+    columns: profileProps(section["w:cols"]),
+    headers: asArray(section["w:headerReference"]).map(profileProps),
+    footers: asArray(section["w:footerReference"]).map(profileProps),
+    fingerprint: hashFingerprint(stripText(section)),
+    evidence: {
+      part: partName,
+      path: `sections[${index}]`
+    }
+  }));
+}
+
+function summarizeProfilePart(partProfile) {
+  return {
+    name: partProfile.name,
+    textLength: partProfile.textLength,
+    textNodeCount: partProfile.textNodeCount,
+    paragraphCount: partProfile.paragraphs.length,
+    tableCount: partProfile.tables.length,
+    sectionCount: partProfile.sections.length,
+    fingerprint: partProfile.fingerprint
+  };
+}
+
+function groupBy(items, keyFn) {
+  const groups = new Map();
+  for (const item of items) {
+    const key = keyFn(item);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  }
+  return groups;
+}
+
+function detectProfileSignals(profile) {
+  const signals = [];
+  const paragraphs = profile.parts.flatMap((part) => part.paragraphs.map((paragraph) => ({
+    ...paragraph,
+    partName: part.name
+  })));
+  const styleGroups = groupBy(paragraphs.filter((paragraph) => paragraph.styleId), (paragraph) => paragraph.styleId);
+  for (const [styleId, items] of styleGroups) {
+    const variants = groupBy(items, (paragraph) => paragraph.paragraphPropertiesFingerprint);
+    if (variants.size > 1) {
+      signals.push({
+        type: "paragraph-style-direct-format-variants",
+        severity: variants.size > 3 ? "medium" : "low",
+        message: `Paragraph style ${styleId} appears with ${variants.size} direct-format variants.`,
+        styleId,
+        variantCount: variants.size,
+        evidence: Array.from(variants.values()).slice(0, 5).map((group) => ({
+          count: group.length,
+          sample: {
+            part: group[0].partName,
+            paragraphIndex: group[0].index,
+            textPreview: group[0].text.slice(0, 80),
+            fingerprint: group[0].paragraphPropertiesFingerprint
+          }
+        }))
+      });
+    }
+  }
+
+  const tableProfiles = profile.parts.flatMap((part) => part.tables.map((table) => ({
+    ...table,
+    partName: part.name
+  })));
+  for (const table of tableProfiles) {
+    const rowFingerprints = new Set(table.rows.slice(1).map((row) => row.formatFingerprint));
+    if (table.rows.length >= 4 && rowFingerprints.size > 1) {
+      signals.push({
+        type: "table-row-format-variants",
+        severity: "low",
+        message: `Table ${table.id} has ${rowFingerprints.size} body-row format variants.`,
+        tableId: table.id,
+        evidence: {
+          part: table.partName,
+          tableIndex: table.index,
+          rowCount: table.rowCount
+        }
+      });
+    }
+  }
+
+  const directRunFormattingCount = paragraphs.reduce((count, paragraph) => (
+    count + paragraph.runs.filter((run) => run.rPr).length
+  ), 0);
+  if (directRunFormattingCount > Math.max(20, paragraphs.length)) {
+    signals.push({
+      type: "heavy-direct-run-formatting",
+      severity: "medium",
+      message: "The document relies heavily on direct run formatting; generalized templates should normalize repeated atoms before inducing rules.",
+      directRunFormattingCount
+    });
+  }
+
+  return signals;
+}
+
 function collectParagraphs(node, result = []) {
   if (!node || typeof node !== "object") return result;
   if (Array.isArray(node)) {
@@ -211,13 +554,22 @@ function collectTables(node, result = []) {
 
 function extractTextFromParsed(node) {
   if (node === null || node === undefined) return "";
-  if (typeof node === "string") return node;
+  if (typeof node === "string") return "";
   if (typeof node !== "object") return "";
   if (Array.isArray(node)) return node.map(extractTextFromParsed).join("");
   let out = "";
-  if (typeof node["w:t"] === "string") out += node["w:t"];
-  for (const value of Object.values(node)) {
-    out += extractTextFromParsed(value);
+  for (const [key, value] of Object.entries(node)) {
+    if (PARSED_TEXT_KEYS.has(key)) {
+      if (typeof value === "string") {
+        out += value;
+      } else if (Array.isArray(value)) {
+        out += value.map((item) => (typeof item === "string" ? item : item?.["#text"] || "")).join("");
+      } else if (value && typeof value === "object") {
+        out += value["#text"] || "";
+      }
+    } else {
+      out += extractTextFromParsed(value);
+    }
   }
   return out;
 }
@@ -280,6 +632,72 @@ async function inspectZip(zip) {
   };
 }
 
+async function profileZip(zip) {
+  const parts = await readWordParts(zip);
+  const styleXml = zip.file("word/styles.xml") ? await zip.file("word/styles.xml").async("string") : "";
+  const numberingXml = zip.file("word/numbering.xml") ? await zip.file("word/numbering.xml").async("string") : "";
+  const profileParts = [];
+
+  for (const part of parts) {
+    const parsed = parseXmlPart(part.xml);
+    const paragraphs = collectDetailedParagraphs(parsed, part.name);
+    const tables = collectDetailedTables(parsed, part.name);
+    const sections = collectSections(parsed, part.name);
+    profileParts.push({
+      name: part.name,
+      textLength: textFromXml(part.xml).length,
+      textNodeCount: collectTextNodes(part.xml, part.name).length,
+      paragraphs,
+      tables,
+      sections,
+      fingerprint: hashFingerprint({
+        name: part.name,
+        structure: normalizeXml(part.xml).replace(TEXT_NODE_RE, "<w:t/>")
+      })
+    });
+  }
+
+  const profile = {
+    version: 1,
+    kind: "docx-template-profile",
+    generatedAt: new Date().toISOString(),
+    package: {
+      partCount: Object.values(zip.files).filter((file) => !file.dir).length,
+      wordTextParts: parts.map((part) => part.name),
+      fingerprint: hashFingerprint({
+        parts: parts.map((part) => ({
+          name: part.name,
+          structure: normalizeXml(part.xml).replace(TEXT_NODE_RE, "<w:t/>")
+        })),
+        styles: normalizeXml(styleXml),
+        numbering: normalizeXml(numberingXml)
+      })
+    },
+    styles: collectStyles(styleXml),
+    numbering: collectNumbering(numberingXml),
+    parts: profileParts
+  };
+
+  profile.summary = {
+    parts: profileParts.map(summarizeProfilePart),
+    counts: {
+      styles: profile.styles.length,
+      abstractNums: profile.numbering.abstractNums.length,
+      nums: profile.numbering.nums.length,
+      paragraphs: profileParts.reduce((sum, part) => sum + part.paragraphs.length, 0),
+      runs: profileParts.reduce((sum, part) => (
+        sum + part.paragraphs.reduce((partSum, paragraph) => partSum + paragraph.runCount, 0)
+      ), 0),
+      tables: profileParts.reduce((sum, part) => sum + part.tables.length, 0),
+      sections: profileParts.reduce((sum, part) => sum + part.sections.length, 0),
+      textNodes: profileParts.reduce((sum, part) => sum + part.textNodeCount, 0)
+    }
+  };
+  profile.signals = detectProfileSignals(profile);
+
+  return profile;
+}
+
 export async function inspectFormat(inputDocx) {
   const zip = await loadDocx(inputDocx);
   const profile = await inspectZip(zip);
@@ -289,6 +707,37 @@ export async function inspectFormat(inputDocx) {
     input: path.resolve(inputDocx),
     profile
   };
+}
+
+export async function profileDocx(inputDocx, options = {}) {
+  const zip = await loadDocx(inputDocx);
+  const profile = await profileZip(zip);
+  const result = {
+    ok: true,
+    command: "template.profile",
+    input: path.resolve(inputDocx),
+    profile
+  };
+
+  const outputPath = options.outputPath || options.out;
+  if (outputPath) {
+    await fs.mkdir(path.dirname(path.resolve(outputPath)), { recursive: true });
+    await fs.writeFile(outputPath, `${JSON.stringify(profile, null, 2)}\n`, "utf8");
+    result.output = path.resolve(outputPath);
+  }
+
+  if (options.summary) {
+    result.profile = {
+      version: profile.version,
+      kind: profile.kind,
+      generatedAt: profile.generatedAt,
+      package: profile.package,
+      summary: profile.summary,
+      signals: profile.signals
+    };
+  }
+
+  return result;
 }
 
 export async function inferFormatTemplate(inputDocx, options = {}) {

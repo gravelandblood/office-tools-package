@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gravelandblood/office-tools-package/schemas/template-ir.schema.json",
+  "title": "Template Detective IR",
+  "type": "object",
+  "required": ["version", "mode", "sources", "formatAtoms", "structure", "dataSchema", "rules", "conflicts", "validation"],
+  "properties": {
+    "version": { "const": 1 },
+    "mode": { "enum": ["preserve", "generalize", "audit"] },
+    "sources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/source" }
+    },
+    "formatAtoms": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/formatAtom" }
+    },
+    "structure": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/structureNode" }
+    },
+    "dataSchema": { "$ref": "#/$defs/dataSchema" },
+    "rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/rule" }
+    },
+    "conflicts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/conflict" }
+    },
+    "validation": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/validation" }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "required": ["id", "docxPath", "role"],
+      "properties": {
+        "id": { "type": "string" },
+        "docxPath": { "type": "string" },
+        "profilePath": { "type": "string" },
+        "role": { "enum": ["example", "holdout", "baseline"] },
+        "fingerprint": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["sourceId"],
+      "properties": {
+        "sourceId": { "type": "string" },
+        "part": { "type": "string" },
+        "path": { "type": "string" },
+        "paragraphIndex": { "type": "integer" },
+        "tableIndex": { "type": "integer" },
+        "rowIndex": { "type": "integer" },
+        "cellIndex": { "type": "integer" },
+        "runIndex": { "type": "integer" },
+        "textPreview": { "type": "string" },
+        "fingerprint": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "formatAtom": {
+      "type": "object",
+      "required": ["id", "kind", "fingerprint", "stability", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "enum": ["paragraph", "run", "table", "row", "cell", "section", "numbering", "style"] },
+        "fingerprint": { "type": "string" },
+        "properties": { "type": ["object", "null"] },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "stability": { "enum": ["stable", "variant", "conditional", "unknown"] }
+      },
+      "additionalProperties": true
+    },
+    "structureNode": {
+      "type": "object",
+      "required": ["id", "kind", "sourceRefs"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "enum": ["paragraph", "table", "section", "headerFooter", "media", "group"] },
+        "sourceRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "formatAtomRefs": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "textPreview": { "type": "string" },
+        "roleCandidates": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "children": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/structureNode" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "dataSchema": {
+      "type": "object",
+      "properties": {
+        "fields": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/dataField" }
+        },
+        "arrays": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/dataField" }
+        },
+        "objects": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/dataField" }
+        },
+        "required": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": true
+    },
+    "dataField": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["string", "number", "date", "boolean", "richText", "array", "object", "unknown"] },
+        "description": { "type": "string" },
+        "examples": { "type": "array" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": true
+    },
+    "rule": {
+      "type": "object",
+      "required": ["id", "kind", "target", "confidence", "evidence", "validationStatus"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "enum": ["staticText", "slot", "loop", "conditional", "format", "normalization"] },
+        "target": { "type": "string" },
+        "expression": { "type": "string" },
+        "value": {},
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "alternatives": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "validationStatus": { "enum": ["unverified", "passed", "failed", "partial"] }
+      },
+      "additionalProperties": true
+    },
+    "conflict": {
+      "type": "object",
+      "required": ["id", "type", "severity", "classification", "evidence", "recommendedAction"],
+      "properties": {
+        "id": { "type": "string" },
+        "type": {
+          "enum": [
+            "sameRoleDifferentFormat",
+            "sameLabelDifferentMeaning",
+            "contentLengthRisk",
+            "optionalBlockAmbiguity",
+            "tableShapeAmbiguity",
+            "directFormattingDrift"
+          ]
+        },
+        "severity": { "enum": ["info", "low", "medium", "high"] },
+        "classification": { "enum": ["conditionalRule", "likelyAnomaly", "unresolvedConflict"] },
+        "evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence" }
+        },
+        "recommendedAction": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "validation": {
+      "type": "object",
+      "required": ["sourceId", "textEqual", "profileEqual"],
+      "properties": {
+        "sourceId": { "type": "string" },
+        "renderedPath": { "type": "string" },
+        "textEqual": { "type": "boolean" },
+        "profileEqual": { "type": "boolean" },
+        "acceptedDifferences": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "failures": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
