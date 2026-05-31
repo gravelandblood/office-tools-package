@@ -352,7 +352,7 @@ function Stop-ProcessIfRunning {
 
   $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
   if ($proc) {
-    Stop-Process -Id $ProcessId -Force
+    Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
     return $true
   }
 

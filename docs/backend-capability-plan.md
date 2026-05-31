@@ -89,9 +89,11 @@ Initial UIA-only candidates:
 | Capability | Why UIA | First implementation |
 |---|---|---|
 | PDF to Word through WPS member converter | Exposed as WPS product PDF UI and shell/native runner, not a documented JSAPI | Implemented as `office-tools pdf to-word --backend wps-uia` |
-| PDF to Excel/PPT/image/text variants | Same PDF conversion window exposes conversion modes | Reuse runner action/navigation once actions and output names are verified |
+| PDF to Excel/PPT variants | Same PDF conversion window exposes conversion modes | Implemented as `office-tools pdf to-excel` and `office-tools pdf to-ppt` |
+| PDF compression | WPS exposes a dedicated `PDF压缩` desktop tool with quality choices | Implemented as `office-tools pdf compress --out output.pdf --level standard` |
+| PDF to image/image-PDF variants | Shell menu exposes entries, but output behavior still needs verification | Keep as research until action and output names are verified |
 | Scanned PDF OCR conversion | Product converter performs OCR after user authorization | Extend PDF conversion backend with OCR diagnostics |
-| PDF merge/split/compress/encrypt tools | WPS PDF toolbox UI, member gated in many installs | Add per-flow UI tree snapshots before automation |
+| PDF merge/split/encrypt tools | WPS PDF toolbox UI, member gated in many installs | Add per-flow UI tree snapshots before automation |
 | UI-only export/settings dialogs | Some product settings are not surfaced through COM/JSAPI | Add `dump`, `find-window`, and dry-run diagnostics first |
 
 UIA requirements:
@@ -122,10 +124,18 @@ Implemented options:
 
 Internal launcher options live under `office-tools wps-uia raw pdf-converter`.
 
+Implemented follow-up:
+
+- `pdf to-excel` and `pdf to-ppt` reuse the PDF conversion window with verified
+  output extensions and cleanup.
+- `pdf compress` uses the WPS `batchcompress` app, supports exact `--out`, and
+  exposes only product-level quality values: `high`, `standard`, `medium`,
+  and `low`.
+
 Parameter discovery still needed:
 
-- Observe WPS process command lines for PDF to Excel, PPT, image, text, merge,
-  split, compress, and OCR flows.
+- Observe WPS process command lines for PDF to image/image-PDF, text, merge,
+  split, and OCR flows.
 - Check whether output directory, page range, language, OCR mode, and output
   format can be passed in app params or runner params.
 - Add UIA setting controls only after the corresponding stable control names are

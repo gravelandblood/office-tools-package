@@ -126,6 +126,46 @@ async function runConvertScript(inputPdf, options = {}) {
   }
 }
 
+async function runCompressScript(inputPdf, options = {}) {
+  if (!inputPdf) {
+    throw new Error("inputPdf is required");
+  }
+  if (!options.outputPath) {
+    throw new Error("outputPath is required");
+  }
+
+  const script = path.join(scriptDir, "CompressPdf.ps1");
+  const args = [
+    "-NoProfile",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    script,
+    "-InputPdf",
+    inputPdf,
+    "-OutputPath",
+    options.outputPath
+  ];
+
+  pushSwitch(args, "-Level", options.level);
+  pushSwitch(args, "-TimeoutSeconds", options.timeoutSeconds);
+  pushSwitch(args, "-WpsExe", options.wpsExe);
+  pushSwitch(args, "-AppFramework", options.appFramework);
+  pushSwitch(args, "-CleanupSeconds", options.cleanupSeconds);
+
+  pushFlag(args, "-Overwrite", options.overwrite);
+  pushFlag(args, "-NoCleanup", options.noCleanup);
+
+  const { stdout, stderr } = await runPowerShell(args, { windowsHide: false });
+  try {
+    return parseJsonLine(stdout);
+  } catch (error) {
+    error.stdout = stdout;
+    error.stderr = stderr;
+    throw error;
+  }
+}
+
 function normalizeCleanupMode(mode) {
   if (!mode || mode === "auto" || mode === "always") return false;
   if (mode === "never") return true;
@@ -260,6 +300,78 @@ export function convertPdfToPpt(inputPdf, options = {}) {
   return convertPdfWithWps("ppt", inputPdf, options);
 }
 
+export async function compressPdf(inputPdf, options = {}) {
+  const outPath = options.outPath || options.outputPath;
+  if (!outPath) {
+    throw new Error("pdf compress requires --out <output.pdf>");
+  }
+
+  const resolvedInput = path.resolve(inputPdf);
+  const resolvedOut = path.resolve(outPath);
+  if (path.extname(resolvedOut).toLowerCase() !== ".pdf") {
+    throw new Error(`--out must end with .pdf for pdf.compress: ${resolvedOut}`);
+  }
+
+  try {
+    await fs.access(resolvedOut);
+    if (!options.overwrite) {
+      throw new Error(`Output already exists. Pass --overwrite to replace it: ${resolvedOut}`);
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+
+  const cleanupNever = options.noCleanup || normalizeCleanupMode(options.cleanup);
+  const stagingDir = await fs.mkdtemp(path.join(os.tmpdir(), "office-tools-pdfcompress-"));
+  const stagedPdf = path.join(stagingDir, `${path.basename(resolvedOut, ".pdf")}.pdf`);
+  try {
+    await fs.copyFile(resolvedInput, stagedPdf);
+    await fs.mkdir(path.dirname(resolvedOut), { recursive: true });
+    const result = await runCompressScript(stagedPdf, {
+      outputPath: resolvedOut,
+      level: options.level || "standard",
+      timeoutSeconds: options.timeoutSeconds,
+      overwrite: options.overwrite,
+      noCleanup: cleanupNever,
+      cleanupSeconds: options.cleanupSeconds
+    });
+
+    const product = {
+      ok: result.ok,
+      command: "pdf.compress",
+      backend: result.backend,
+      input: resolvedInput,
+      output: resolvedOut,
+      level: result.level,
+      inputLength: result.inputLength,
+      length: result.length,
+      savedBytes: result.savedBytes,
+      lastWriteTime: result.lastWriteTime,
+      events: result.cleanup || []
+    };
+
+    if (options.verbose) {
+      product.diagnostics = {
+        runner: result.runner,
+        staging: {
+          dir: stagingDir,
+          input: stagedPdf
+        }
+      };
+    }
+
+    return product;
+  } finally {
+    try {
+      await fs.rm(stagingDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 });
+    } catch (error) {
+      if (options.verbose) {
+        process.stderr.write(`warning: unable to remove staging directory ${stagingDir}: ${error.message}\n`);
+      }
+    }
+  }
+}
+
 export function convertPdfToWordRaw(inputPdf, options = {}) {
   return runConvertScript(inputPdf, options);
 }
@@ -384,6 +496,19 @@ export const capabilities = {
       description: "Convert a PDF to PPTX through the WPS PDF conversion desktop UI.",
       options: [
         "outPath",
+        "timeoutSeconds",
+        "cleanup",
+        "cleanupSeconds",
+        "overwrite",
+        "verbose"
+      ]
+    },
+    {
+      id: "pdf.compress",
+      description: "Compress a PDF through the WPS PDF compression desktop UI.",
+      options: [
+        "outPath",
+        "level",
         "timeoutSeconds",
         "cleanup",
         "cleanupSeconds",

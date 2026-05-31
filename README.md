@@ -9,13 +9,13 @@
 - **WPS COM**：用于真实 WPS 应用对象模型、打开、保存、导出等行为。
 - **WPS UIA**：用于只能通过 WPS 桌面界面使用的产品能力，例如 PDF 转 Office、OCR、压缩等。
 
-当前已经落地的是 WPS UI Automation 后端里的 PDF 转 Office 能力。
+当前已经落地的是 WPS UI Automation 后端里的 PDF 转 Office 与 PDF 压缩能力。
 
 ## 当前状态
 
 - npm workspace 包结构
 - `office-tools` CLI 原型
-- WPS UIA PDF 转 Word / Excel / PPT
+- WPS UIA PDF 转 Word / Excel / PPT / 压缩
 - OfficeCLI / WPS JSAPI / WPS UIA 能力规划
 - WPS 插件桥接和 RPC 调用原型
 - Windows 桌面 WPS 自动化诊断脚本
@@ -53,6 +53,25 @@ node packages/cli/bin/office-tools.js pdf to-word C:\path\input.pdf `
 
 默认情况下，转换完成后会清理本次任务打开的 WPS 转换窗口和自动打开的文档页，避免影响下一次自动化任务。
 
+## PDF 压缩
+
+使用 WPS UIA 后端压缩 PDF，并把输出文件放到指定路径：
+
+```powershell
+node packages/cli/bin/office-tools.js pdf compress C:\path\input.pdf --out C:\path\compressed.pdf
+```
+
+压缩质量可选：
+
+```powershell
+node packages/cli/bin/office-tools.js pdf compress C:\path\input.pdf `
+  --out C:\path\compressed.pdf `
+  --level standard `
+  --overwrite
+```
+
+`--level` 支持 `high`、`standard`、`medium`、`low`。默认使用 `standard`。命令会在临时目录中运行 WPS 压缩器，再把产物移动到 `--out` 指定位置，并清理本次任务打开的 `PDF压缩` 窗口。
+
 调试 WPS UI 时可以使用：
 
 ```powershell
@@ -86,13 +105,13 @@ node packages/cli/bin/office-tools.js wps-uia windows
 - `pdf to-word`
 - `pdf to-excel`
 - `pdf to-ppt`
-
-下一批优先研究：
-
 - `pdf compress`
-- `image ocr`
-- `image to-excel`
-- `ofd to-pdf`
+
+已经探索但暂不产品化：
+
+- `image ocr` / `image to-excel`：入口存在，但当前 UI 主要是 WebView，未观察到稳定无人工输出闭环。
+- `image to-pdf`：右键动词存在，但 Shell 动词调用在本机探测中会卡住，暂不包装成 CLI。
+- `ofd to-pdf`：入口存在，但本机验证只打开 OFD 容器，未观察到默认输出文件。
 
 不优先做成稳定 CLI：
 

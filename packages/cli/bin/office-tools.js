@@ -3,6 +3,7 @@ import { capabilities as officecliCapabilities } from "@office-tools/backend-off
 import { capabilities as wpsJsapiCapabilities } from "@office-tools/backend-wps-jsapi";
 import {
   capabilities as wpsUiaCapabilities,
+  compressPdf,
   convertPdfToExcel,
   convertPdfToPpt,
   convertPdfToWord,
@@ -24,6 +25,7 @@ Usage:
   office-tools pdf to-word <input.pdf> --out <output.docx> [options]
   office-tools pdf to-excel <input.pdf> --out <output.xlsx> [options]
   office-tools pdf to-ppt <input.pdf> --out <output.pptx> [options]
+  office-tools pdf compress <input.pdf> --out <output.pdf> [options]
   office-tools wps-uia env
   office-tools wps-uia verbs <input.pdf>
   office-tools wps-uia windows
@@ -36,6 +38,8 @@ PDF options:
   --timeout <seconds>            Wait time for the output file. Default: 180.
   --cleanup <auto|always|never>  Cleanup policy for UIA windows. Default: auto.
   --cleanup-seconds <seconds>    Wait time for cleanup. Default: 20.
+  --level <high|standard|medium|low>
+                                  Compression quality. Default: standard.
   --overwrite                    Replace an existing output file.
   --verbose                      Include staging diagnostics.
 
@@ -120,6 +124,69 @@ function parsePdfConversion(command, argv) {
 
   if (!options.outPath) {
     throw new Error(`pdf ${command} requires --out <output>`);
+  }
+
+  return { input, options };
+}
+
+function parsePdfCompress(argv) {
+  const input = argv[0];
+  if (!input || input.startsWith("--")) {
+    throw new Error("input PDF is required");
+  }
+
+  const options = {};
+  let backend = "auto";
+
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--backend":
+        backend = readOption(argv, i);
+        i += 1;
+        break;
+      case "--out":
+      case "--output":
+        options.outPath = readOption(argv, i);
+        i += 1;
+        break;
+      case "--level":
+        options.level = readOption(argv, i);
+        i += 1;
+        break;
+      case "--timeout":
+        options.timeoutSeconds = Number(readOption(argv, i));
+        i += 1;
+        break;
+      case "--cleanup":
+        options.cleanup = readOption(argv, i);
+        i += 1;
+        break;
+      case "--cleanup-seconds":
+        options.cleanupSeconds = Number(readOption(argv, i));
+        i += 1;
+        break;
+      case "--overwrite":
+        options.overwrite = true;
+        break;
+      case "--verbose":
+        options.verbose = true;
+        break;
+      default:
+        throw new Error(`Unknown pdf compress option: ${arg}`);
+    }
+  }
+
+  if (backend !== "auto" && backend !== "wps-uia") {
+    throw new Error(`Unsupported backend for pdf compress: ${backend}`);
+  }
+
+  if (options.level && !["high", "standard", "medium", "low"].includes(options.level)) {
+    throw new Error(`Unsupported pdf compress level: ${options.level}`);
+  }
+
+  if (!options.outPath) {
+    throw new Error("pdf compress requires --out <output.pdf>");
   }
 
   return { input, options };
@@ -273,6 +340,12 @@ async function main() {
   if (domain === "pdf" && command === "to-ppt") {
     const { input, options } = parsePdfConversion(command, [subcommand, ...rest]);
     printJson(await convertPdfToPpt(input, options));
+    return;
+  }
+
+  if (domain === "pdf" && command === "compress") {
+    const { input, options } = parsePdfCompress([subcommand, ...rest]);
+    printJson(await compressPdf(input, options));
     return;
   }
 
