@@ -46,6 +46,7 @@ async function main() {
 
   for (const file of [
     "packages/cli/bin/office-tools.js",
+    "packages/backend-template/src/index.js",
     "packages/backend-wps-uia/src/index.js",
     "packages/backend-officecli/src/index.js",
     "packages/backend-wps-jsapi/src/index.js"
@@ -88,6 +89,7 @@ async function main() {
   assertOk(capabilities);
   const parsed = JSON.parse(capabilities.stdout);
   const wpsUia = parsed.backends.find((backend) => backend.backend === "wps-uia");
+  const template = parsed.backends.find((backend) => backend.backend === "template");
   const ids = new Set(wpsUia.commands.map((command) => command.id));
   for (const id of [
     "pdf.toWord",
@@ -102,12 +104,23 @@ async function main() {
       throw new Error(`Missing capability: ${id}`);
     }
   }
+  const templateIds = new Set(template.commands.map((command) => command.id));
+  for (const id of [
+    "template.inferFormat",
+    "template.render",
+    "template.compareFormat",
+    "template.inspectFormat"
+  ]) {
+    if (!templateIds.has(id)) {
+      throw new Error(`Missing capability: ${id}`);
+    }
+  }
 
   const help = await run("node", ["packages/cli/bin/office-tools.js", "--help"], {
     label: "office-tools --help"
   });
   assertOk(help);
-  for (const text of ["pdf to-image-pdf", "file slim", "wps-uia dump-window"]) {
+  for (const text of ["pdf to-image-pdf", "file slim", "template infer-format", "wps-uia dump-window"]) {
     if (!help.stdout.includes(text)) {
       throw new Error(`Help output missing: ${text}`);
     }

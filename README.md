@@ -8,6 +8,7 @@
 - **WPS JSAPI**：用于 WPS 插件、侧边栏、活动文档、选区和窗口上下文。
 - **WPS COM**：用于真实 WPS 应用对象模型、打开、保存、导出等行为。
 - **WPS UIA**：用于只能通过 WPS 桌面界面使用的产品能力，例如 PDF 转 Office、OCR、压缩等。
+- **Template**：用于 DOCX 模板探测、格式指纹、模板渲染和回归比较。
 
 当前已经落地的是 WPS UI Automation 后端里的 PDF 转 Office、图片型 PDF、PDF 压缩与文件瘦身能力。
 
@@ -16,6 +17,7 @@
 - npm workspace 包结构
 - `office-tools` CLI 原型
 - WPS UIA PDF 转 Word / Excel / PPT / 图片型 PDF / 压缩 / 文件瘦身
+- DOCX 格式保持型模板探测 MVP
 - OfficeCLI / WPS JSAPI / WPS UIA 能力规划
 - WPS 插件桥接和 RPC 调用原型
 - Windows 桌面 WPS 自动化诊断脚本
@@ -83,12 +85,41 @@ node packages/cli/bin/office-tools.js file slim C:\path\input.pdf --out C:\path\
 
 命令会在临时目录中运行 WPS 文件瘦身，等待默认产物 `(已瘦身)<文件名>`，再移动到 `--out` 指定位置，并清理本次任务打开的 `文件瘦身` 和 `WPS Office` 窗口。
 
+## DOCX 模板探测
+
+第一版先做格式保持型模板：保留原 DOCX 的 OOXML 结构、样式、段落、表格、页眉页脚等，只把文本节点替换为占位符，并导出可回填的数据。
+
+```powershell
+node packages/cli/bin/office-tools.js template inspect-format C:\path\sample.docx
+
+node packages/cli/bin/office-tools.js template infer-format C:\path\sample.docx `
+  --out-template C:\path\template.docx `
+  --out-data C:\path\data.json `
+  --out-profile C:\path\profile.json
+
+node packages/cli/bin/office-tools.js template render C:\path\template.docx `
+  --data C:\path\data.json `
+  --out C:\path\rendered.docx
+
+node packages/cli/bin/office-tools.js template compare-format C:\path\sample.docx C:\path\rendered.docx
+```
+
+目标是形成可验证闭环：`infer-format` 得到的模板，用导出的 `data.json` 渲染后，应与原文档在文本和格式指纹上基本吻合。当前 MVP 已在合成样本和本机真实 DOCX 上通过闭环验证。
+
+注意：当前占位符是细粒度文本节点级别，例如 `text.0001`，用于先证明格式保持和回填闭环；业务字段命名、相邻 run 合并、表格循环和条件块会在后续版本继续推断。
+
 ## 验证与打包
 
 静态验证：
 
 ```powershell
 npm run verify
+```
+
+模板探测回归：
+
+```powershell
+npm run smoke:template
 ```
 
 本机 WPS UIA 回归需要 Windows、已安装 WPS，并提供一个本地 PDF 样本：
@@ -177,6 +208,7 @@ node packages/cli/bin/office-tools.js wps-uia windows
 
 - [后端能力规划](docs/backend-capability-plan.md)
 - [WPS UIA 能力与 CLI 设计](docs/wps-uia-cli-design.md)
+- [DOCX 模板探测设计](docs/template-detection-design.md)
 
 ## 许可证
 

@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 import { capabilities as officecliCapabilities } from "@office-tools/backend-officecli";
+import {
+  capabilities as templateCapabilities,
+  compareFormat,
+  inferFormatTemplate,
+  inspectFormat,
+  renderTemplate
+} from "@office-tools/backend-template";
 import { capabilities as wpsJsapiCapabilities } from "@office-tools/backend-wps-jsapi";
 import {
   capabilities as wpsUiaCapabilities,
@@ -31,6 +38,10 @@ Usage:
   office-tools pdf to-image-pdf <input.pdf> --out <output.pdf> [options]
   office-tools pdf compress <input.pdf> --out <output.pdf> [options]
   office-tools file slim <input> --out <output> [options]
+  office-tools template inspect-format <input.docx> [options]
+  office-tools template infer-format <input.docx> --out-template <template.docx> --out-data <data.json> --out-profile <profile.json>
+  office-tools template render <template.docx> --data <data.json> --out <output.docx>
+  office-tools template compare-format <left.docx> <right.docx> [options]
   office-tools wps-uia env
   office-tools wps-uia verbs <input.pdf>
   office-tools wps-uia windows
@@ -58,6 +69,14 @@ File options:
   --cleanup-seconds <seconds>    Wait time for cleanup. Default: 20.
   --overwrite                    Replace an existing output file.
   --verbose                      Include staging diagnostics.
+
+Template options:
+  --out <path>                   Output file path.
+  --out-template <path>          Generated DOCX template path.
+  --out-data <path>              Generated JSON data path.
+  --out-profile <path>           Generated JSON format profile path.
+  --data <path>                  JSON data for rendering.
+  --include-text                 Include extracted text in compare output.
 
 Raw WPS UIA options:
   --launch-mode <mode>           shell, native, or cloud. Default: shell.
@@ -420,6 +439,85 @@ function parseDumpWindow(argv) {
   return options;
 }
 
+function parseTemplateInfer(argv) {
+  const input = argv[0];
+  if (!input || input.startsWith("--")) {
+    throw new Error("input DOCX is required");
+  }
+
+  const options = {};
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--out-template":
+        options.templatePath = readOption(argv, i);
+        i += 1;
+        break;
+      case "--out-data":
+        options.dataPath = readOption(argv, i);
+        i += 1;
+        break;
+      case "--out-profile":
+        options.profilePath = readOption(argv, i);
+        i += 1;
+        break;
+      default:
+        throw new Error(`Unknown template infer-format option: ${arg}`);
+    }
+  }
+
+  return { input, options };
+}
+
+function parseTemplateRender(argv) {
+  const input = argv[0];
+  if (!input || input.startsWith("--")) {
+    throw new Error("template DOCX is required");
+  }
+
+  const options = {};
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--data":
+        options.dataPath = readOption(argv, i);
+        i += 1;
+        break;
+      case "--out":
+      case "--output":
+        options.outputPath = readOption(argv, i);
+        i += 1;
+        break;
+      default:
+        throw new Error(`Unknown template render option: ${arg}`);
+    }
+  }
+
+  return { input, options };
+}
+
+function parseTemplateCompare(argv) {
+  const left = argv[0];
+  const right = argv[1];
+  if (!left || left.startsWith("--") || !right || right.startsWith("--")) {
+    throw new Error("template compare-format requires <left.docx> <right.docx>");
+  }
+
+  const options = {};
+  for (let i = 2; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--include-text":
+        options.includeText = true;
+        break;
+      default:
+        throw new Error(`Unknown template compare-format option: ${arg}`);
+    }
+  }
+
+  return { left, right, options };
+}
+
 async function main() {
   const [domain, command, subcommand, ...rest] = process.argv.slice(2);
   if (!domain || domain === "--help" || domain === "-h") {
@@ -432,6 +530,7 @@ async function main() {
       ok: true,
       backends: [
         officecliCapabilities,
+        templateCapabilities,
         wpsJsapiCapabilities,
         wpsUiaCapabilities
       ]
@@ -472,6 +571,30 @@ async function main() {
   if (domain === "file" && command === "slim") {
     const { input, options } = parseFileSlim([subcommand, ...rest]);
     printJson(await slimFile(input, options));
+    return;
+  }
+
+  if (domain === "template" && command === "inspect-format") {
+    if (!subcommand) throw new Error("template inspect-format requires <input.docx>");
+    printJson(await inspectFormat(subcommand));
+    return;
+  }
+
+  if (domain === "template" && command === "infer-format") {
+    const { input, options } = parseTemplateInfer([subcommand, ...rest]);
+    printJson(await inferFormatTemplate(input, options));
+    return;
+  }
+
+  if (domain === "template" && command === "render") {
+    const { input, options } = parseTemplateRender([subcommand, ...rest]);
+    printJson(await renderTemplate(input, options));
+    return;
+  }
+
+  if (domain === "template" && command === "compare-format") {
+    const { left, right, options } = parseTemplateCompare([subcommand, ...rest]);
+    printJson(await compareFormat(left, right, options));
     return;
   }
 

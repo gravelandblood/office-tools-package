@@ -17,7 +17,11 @@
     "cli": "node packages/cli/bin/office-tools.js",
     "verify": "node scripts/verify.js",
     "test": "npm run verify",
+    "smoke:template": "node scripts/smoke-template.js",
     "smoke:wps-uia": "node scripts/smoke-wps-uia.js",
     "pack:cli": "npm pack -w @office-tools/cli --dry-run"
+  },
+  "devDependencies": {
+    "docx": "^9.7.1"
   }
 }
