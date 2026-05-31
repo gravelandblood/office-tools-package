@@ -5,6 +5,12 @@
   "description": "Planned WPS JSAPI adapter for office-tools-package.",
   "type": "module",
   "main": "src/index.js",
+  "files": [
+    "src"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "exports": {
     ".": "./src/index.js"
   }

@@ -5,6 +5,20 @@
   "description": "Windows WPS UI Automation backend for office-tools-package.",
   "type": "module",
   "main": "src/index.js",
+  "files": [
+    "src",
+    "scripts/ClickStartConvert.ps1",
+    "scripts/CompressPdf.ps1",
+    "scripts/ConvertPdfToWord.ps1",
+    "scripts/DumpWindow.ps1",
+    "scripts/DumpWpsPdfUi.ps1",
+    "scripts/ExtractDocxText.ps1",
+    "scripts/SlimFile.ps1",
+    "scripts/watch-verb.ps1"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "exports": {
     ".": "./src/index.js"
   }

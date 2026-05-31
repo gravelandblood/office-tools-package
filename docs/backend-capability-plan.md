@@ -20,7 +20,7 @@ References checked while drafting this plan:
 
 | Backend | Best for | Avoid for |
 |---|---|---|
-| OfficeCLI | Headless OOXML inspection and mutation, deterministic JSON, CI and MCP tools | Product-only WPS features, active desktop state, WPS membership workflows |
+| OfficeCLI | Headless OOXML inspection and mutation, deterministic JSON, CI and MCP tools | Product-only WPS features, active desktop state, WPS membership workflows, PDF page operations |
 | WPS JSAPI | Add-in/sidebar flows, active document/window/selection, web-to-WPS callbacks | Headless batch jobs, UI-only product features, arbitrary desktop automation |
 | WPS COM | Real WPS application behavior, open/save/export, object-model fidelity | Non-Windows environments, unattended server usage without a desktop profile |
 | WPS UIA | WPS features exposed only through desktop UI, especially PDF/member tools | Deterministic OOXML edits, CI, hidden/headless automation |
@@ -42,6 +42,17 @@ Planned command groups:
 | Extract | text, tables, images, embedded media, notes | `office-tools docx text`, `office-tools pptx images` |
 | Render bridge | delegate render/export to a configured app backend when OfficeCLI cannot render | router selects WPS COM or another renderer |
 | MCP | expose the same deterministic operations to agents | `office-tools mcp serve` |
+
+PDF note:
+
+- Current OfficeCLI public capability descriptions are centered on Word,
+  Excel, and PowerPoint file generation/inspection/editing, plus template and
+  patch-style OOXML workflows.
+- Do not route PDF split/merge/rotate through the OfficeCLI adapter unless
+  OfficeCLI explicitly adds those commands later.
+- For deterministic PDF page operations, prefer a dedicated PDF backend and
+  keep WPS UIA only as a product-compatible fallback when WPS behavior is
+  specifically required.
 
 Implementation notes:
 

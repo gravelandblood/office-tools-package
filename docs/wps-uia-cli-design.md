@@ -19,6 +19,7 @@ WPS UIA 只应该用于稳定文件 API、COM 或 JSAPI 无法覆盖，但 WPS �
 
 - 普通 OOXML 读写。
 - 本地库可稳定完成的 PDF 合并、拆分、旋转。
+- OfficeCLI 已覆盖或未来明确覆盖的无头 Office 文件操作。
 - 需要大量人工判断的编辑类操作。
 - 任何试图绕过 WPS 授权的行为。
 
@@ -181,3 +182,4 @@ office-tools wps-uia raw pdf-converter input.pdf --action ConvertToWord
 2. 对 `ofd to-pdf` 继续寻找可直接产出 PDF 的 runner 参数；当前不建议暴露用户命令。
 3. 研究 PDF 转可搜索 PDF：它与 `to-image-pdf` 同属转换窗口，但可能依赖 OCR/会员授权，必须先确认授权失败时的错误语义。
 4. 如确实需要 WPS 版 `pdf split` / `pdf merge`，先定义本地库后端的产品语义，再把 UIA 作为兼容后端补上。
+5. PDF split / merge / rotate 不归入 OfficeCLI 适配器，除非 OfficeCLI 明确提供 PDF 页面级命令；优先考虑专门 PDF 后端。

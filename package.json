@@ -5,10 +5,19 @@
   "license": "MIT",
   "description": "Agent-friendly Office and WPS automation toolkit prototype.",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gravelandblood/office-tools-package.git"
+  },
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
-    "office-tools": "node packages/cli/bin/office-tools.js"
+    "office-tools": "node packages/cli/bin/office-tools.js",
+    "cli": "node packages/cli/bin/office-tools.js",
+    "verify": "node scripts/verify.js",
+    "test": "npm run verify",
+    "smoke:wps-uia": "node scripts/smoke-wps-uia.js",
+    "pack:cli": "npm pack -w @office-tools/cli --dry-run"
   }
 }

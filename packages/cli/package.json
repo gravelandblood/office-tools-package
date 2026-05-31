@@ -4,6 +4,13 @@
   "license": "MIT",
   "description": "CLI for the office-tools-package automation toolkit.",
   "type": "module",
+  "main": "bin/office-tools.js",
+  "files": [
+    "bin"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "bin": {
     "office-tools": "bin/office-tools.js"
   },

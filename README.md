@@ -29,7 +29,7 @@ npm install
 查看能力矩阵：
 
 ```powershell
-node packages/cli/bin/office-tools.js capabilities
+npm run cli -- capabilities
 ```
 
 ## PDF 转 Office
@@ -83,6 +83,34 @@ node packages/cli/bin/office-tools.js file slim C:\path\input.pdf --out C:\path\
 
 命令会在临时目录中运行 WPS 文件瘦身，等待默认产物 `(已瘦身)<文件名>`，再移动到 `--out` 指定位置，并清理本次任务打开的 `文件瘦身` 和 `WPS Office` 窗口。
 
+## 验证与打包
+
+静态验证：
+
+```powershell
+npm run verify
+```
+
+本机 WPS UIA 回归需要 Windows、已安装 WPS，并提供一个本地 PDF 样本：
+
+```powershell
+npm run smoke:wps-uia -- --sample C:\path\input.pdf
+```
+
+只跑部分命令：
+
+```powershell
+npm run smoke:wps-uia -- --sample C:\path\input.pdf --commands to-image-pdf,file-slim
+```
+
+检查 CLI 包发布内容：
+
+```powershell
+npm run pack:cli
+```
+
+当前是 npm workspaces 多包结构，`@office-tools/cli` 依赖同 workspace 下的后端包；正式发布时需要按后端包到 CLI 包的顺序一起发布，或后续再做单包 bundle。
+
 调试 WPS UI 时可以使用：
 
 ```powershell
@@ -104,6 +132,7 @@ node packages/cli/bin/office-tools.js wps-uia windows
 | 场景 | 推荐后端 |
 |---|---|
 | `.docx/.xlsx/.pptx` 文件级读写 | OfficeCLI |
+| PDF 合并、拆分、旋转等页面级处理 | 待接入成熟 PDF 后端 |
 | CI / 批处理 / MCP 结构化工具 | OfficeCLI |
 | WPS 活动文档、选区、插件侧边栏 | WPS JSAPI |
 | WPS 打开、保存、导出、对象模型行为 | WPS COM |
