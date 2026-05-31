@@ -16,6 +16,14 @@ node packages/cli/bin/office-tools.js template profile sample.docx --out sample.
 
 Keep the generated profile as the source of truth for formatting. It contains text parts, paragraphs, runs, tables, sections, styles, numbering, fingerprints, and conflict signals.
 
+For one or more samples, create the first Template IR:
+
+```powershell
+node packages/cli/bin/office-tools.js template analyze sample-a.docx sample-b.docx --out-ir template-ir.json
+```
+
+This IR contains deterministic format atoms, structure nodes, slot/loop candidates, and conflicts. Treat it as a starting point for LLM reasoning, not as the final generalized template.
+
 Use `template infer-format` only to build a preservation baseline:
 
 ```powershell
@@ -27,7 +35,7 @@ node packages/cli/bin/office-tools.js template infer-format sample.docx `
 
 ## Phase 2: Normalization
 
-Normalize profiles into the Template IR:
+Normalize profiles into the Template IR, or inspect the IR produced by `template analyze`:
 
 - Convert repeated `pPr`, `rPr`, table, row, and cell properties into reusable format atoms.
 - Preserve original evidence locations for every atom and rule candidate.
@@ -35,6 +43,8 @@ Normalize profiles into the Template IR:
 - Normalize obvious noise such as volatile generated IDs separately from semantic properties.
 
 Do not erase inconsistencies. If two visually similar paragraphs use different direct formatting, record both variants and defer the decision to rule induction.
+
+Current analyzer limitation: rough multi-sample alignment uses document part and block index. For structurally different report types, expect many `sameRoleDifferentFormat`, `tableShapeAmbiguity`, and `optionalBlockAmbiguity` conflicts. Use these conflicts to drive anchor-based alignment rather than accepting the rough pairing.
 
 ## Phase 3: Rule Induction
 

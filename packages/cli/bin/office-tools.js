@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { capabilities as officecliCapabilities } from "@office-tools/backend-officecli";
 import {
+  analyzeTemplates,
   capabilities as templateCapabilities,
   compareFormat,
   inferFormatTemplate,
@@ -41,6 +42,7 @@ Usage:
   office-tools file slim <input> --out <output> [options]
   office-tools template inspect-format <input.docx> [options]
   office-tools template profile <input.docx> [options]
+  office-tools template analyze <input.docx...> [options]
   office-tools template infer-format <input.docx> --out-template <template.docx> --out-data <data.json> --out-profile <profile.json>
   office-tools template render <template.docx> --data <data.json> --out <output.docx>
   office-tools template compare-format <left.docx> <right.docx> [options]
@@ -79,6 +81,7 @@ Template options:
   --out-profile <path>           Generated JSON format profile path.
   --data <path>                  JSON data for rendering.
   --summary                      Print only profile summary and signals.
+  --out-ir <path>                Generated Template Detective IR path.
   --include-text                 Include extracted text in compare output.
 
 Raw WPS UIA options:
@@ -498,6 +501,39 @@ function parseTemplateProfile(argv) {
   return { input, options };
 }
 
+function parseTemplateAnalyze(argv) {
+  const inputs = [];
+  const options = {};
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (!arg) continue;
+    switch (arg) {
+      case "--out":
+      case "--output":
+      case "--out-ir":
+        options.outputPath = readOption(argv, i);
+        i += 1;
+        break;
+      case "--summary":
+        options.summary = true;
+        break;
+      default:
+        if (arg.startsWith("--")) {
+          throw new Error(`Unknown template analyze option: ${arg}`);
+        }
+        inputs.push(arg);
+        break;
+    }
+  }
+
+  if (!inputs.length) {
+    throw new Error("template analyze requires <input.docx...>");
+  }
+
+  return { inputs, options };
+}
+
 function parseTemplateRender(argv) {
   const input = argv[0];
   if (!input || input.startsWith("--")) {
@@ -612,6 +648,12 @@ async function main() {
   if (domain === "template" && command === "profile") {
     const { input, options } = parseTemplateProfile([subcommand, ...rest]);
     printJson(await profileDocx(input, options));
+    return;
+  }
+
+  if (domain === "template" && command === "analyze") {
+    const { inputs, options } = parseTemplateAnalyze([subcommand, ...rest]);
+    printJson(await analyzeTemplates(inputs, options));
     return;
   }
 

@@ -13,11 +13,12 @@ Use this skill as a heavy workflow, not as a one-shot converter. The goal is to 
 
 1. Extract deterministic evidence first.
    - Run `office-tools template profile <sample.docx> --out <profile.json>` for every sample.
+   - Run `office-tools template analyze <sample-a.docx> <sample-b.docx> --out-ir <ir.json>` to build the first deterministic IR, rule candidates, and conflict report.
    - Run `office-tools template infer-format` only when a byte-preserving placeholder baseline is needed.
    - Do not ask an LLM to reason over raw OOXML unless the normalized profile is insufficient.
 
 2. Normalize before reasoning.
-   - Load `references/template-ir.md` and map profiles into the IR shape.
+   - Load `references/template-ir.md` and inspect the `template analyze` IR before doing any custom mapping.
    - Collapse repeated formatting atoms by fingerprint.
    - Keep evidence pointers: part name, paragraph/table/run index, source text preview, and fingerprint.
 

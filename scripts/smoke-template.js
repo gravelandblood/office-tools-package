@@ -31,9 +31,28 @@ function parseJson(result) {
   return parsed;
 }
 
-async function writeSampleDocx(outPath) {
-  const { Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell, WidthType, BorderStyle, ShadingType, AlignmentType } = await import("docx");
+async function writeSampleDocx(outPath, options = {}) {
+  const {
+    AlignmentType,
+    BorderStyle,
+    Document,
+    Packer,
+    Paragraph,
+    ShadingType,
+    Table,
+    TableCell,
+    TableRow,
+    TextRun,
+    WidthType
+  } = await import("docx");
+
   const border = { style: BorderStyle.SINGLE, size: 4, color: "4472C4" };
+  const title = options.title || "Sample Due Diligence Report";
+  const company = options.company || "Beijing Sample Technology Co., Ltd.";
+  const date = options.date || "2026-06-01";
+  const rows = options.rows || [["Contract Review", "Alice", "Done"]];
+  const conclusion = options.conclusion || "The sample document format is stable.";
+
   const doc = new Document({
     styles: {
       default: {
@@ -53,18 +72,18 @@ async function writeSampleDocx(outPath) {
       children: [
         new Paragraph({
           alignment: AlignmentType.CENTER,
-          children: [new TextRun({ text: "项目尽调报告", bold: true, size: 32, color: "1F4E79" })]
+          children: [new TextRun({ text: title, bold: true, size: 32, color: "1F4E79" })]
         }),
         new Paragraph({
           children: [
-            new TextRun({ text: "公司名称：", bold: true }),
-            new TextRun("北京样例科技有限公司")
+            new TextRun({ text: "Company: ", bold: true }),
+            new TextRun(company)
           ]
         }),
         new Paragraph({
           children: [
-            new TextRun({ text: "报告日期：", bold: true }),
-            new TextRun("2026年06月01日")
+            new TextRun({ text: "Report Date: ", bold: true }),
+            new TextRun(date)
           ]
         }),
         new Table({
@@ -72,24 +91,27 @@ async function writeSampleDocx(outPath) {
           columnWidths: [3120, 3120, 3120],
           rows: [
             new TableRow({
-              children: ["项目", "负责人", "状态"].map((text) => new TableCell({
+              children: ["Item", "Owner", "Status"].map((text) => new TableCell({
                 width: { size: 3120, type: WidthType.DXA },
                 borders: { top: border, bottom: border, left: border, right: border },
                 shading: { fill: "D9EAF7", type: ShadingType.CLEAR },
                 children: [new Paragraph({ children: [new TextRun({ text, bold: true })] })]
               }))
             }),
-            new TableRow({
-              children: ["合同审查", "张三", "已完成"].map((text) => new TableCell({
+            ...rows.map((row) => new TableRow({
+              children: row.map((text) => new TableCell({
                 width: { size: 3120, type: WidthType.DXA },
                 borders: { top: border, bottom: border, left: border, right: border },
                 children: [new Paragraph(text)]
               }))
-            })
+            }))
           ]
         }),
         new Paragraph({
-          children: [new TextRun({ text: "结论：", bold: true }), new TextRun("样例文档格式保持稳定。")]
+          children: [
+            new TextRun({ text: "Conclusion: ", bold: true }),
+            new TextRun(conclusion)
+          ]
         })
       ]
     }]
@@ -101,14 +123,28 @@ async function writeSampleDocx(outPath) {
 async function main() {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "office-tools-template-smoke-"));
   const sample = path.join(tempDir, "sample.docx");
+  const sampleVariant = path.join(tempDir, "sample-variant.docx");
   const template = path.join(tempDir, "template.docx");
   const data = path.join(tempDir, "data.json");
   const profile = path.join(tempDir, "profile.json");
   const detectiveProfile = path.join(tempDir, "detective-profile.json");
+  const detectiveIr = path.join(tempDir, "detective-ir.json");
+  const detectiveIrMulti = path.join(tempDir, "detective-ir-multi.json");
   const rendered = path.join(tempDir, "rendered.docx");
 
   await writeSampleDocx(sample);
+  await writeSampleDocx(sampleVariant, {
+    company: "Shanghai Variant Manufacturing Co., Ltd.",
+    date: "2026-07-15",
+    rows: [
+      ["Contract Review", "Alice", "Done"],
+      ["IP Review", "Bob", "Pending"]
+    ],
+    conclusion: "The variant document keeps the same layout with different data."
+  });
+
   parseJson(await run(["template", "inspect-format", sample]));
+
   const profiled = parseJson(await run(["template", "profile", sample, "--out", detectiveProfile, "--summary"]));
   if (profiled.profile.summary.counts.paragraphs < 4 || profiled.profile.summary.counts.tables !== 1) {
     throw new Error(`Unexpected template profile summary: ${JSON.stringify(profiled, null, 2)}`);
@@ -118,6 +154,25 @@ async function main() {
   if (!detailedPart || !Array.isArray(fullProfile.signals)) {
     throw new Error("Template profile did not include detailed paragraphs, runs, and signals.");
   }
+
+  const analyzed = parseJson(await run(["template", "analyze", sample, "--out-ir", detectiveIr, "--summary"]));
+  if (!analyzed.ir.summary.structureNodes || !analyzed.ir.summary.formatAtoms || !Array.isArray(analyzed.ir.conflicts)) {
+    throw new Error(`Unexpected template analysis summary: ${JSON.stringify(analyzed, null, 2)}`);
+  }
+  const fullIr = JSON.parse(await fs.readFile(detectiveIr, "utf8"));
+  if (!fullIr.structure?.length || !fullIr.formatAtoms?.length || !fullIr.dataSchema?.fields) {
+    throw new Error("Template analysis did not include structure, format atoms, and data schema.");
+  }
+
+  const multiAnalyzed = parseJson(await run([
+    "template", "analyze", sample, sampleVariant,
+    "--out-ir", detectiveIrMulti,
+    "--summary"
+  ]));
+  if (multiAnalyzed.ir.summary.fields < 2 || multiAnalyzed.ir.summary.arrays < 1) {
+    throw new Error(`Multi-sample analysis did not infer expected fields and loops: ${JSON.stringify(multiAnalyzed, null, 2)}`);
+  }
+
   const inferred = parseJson(await run([
     "template", "infer-format", sample,
     "--out-template", template,
@@ -137,7 +192,7 @@ async function main() {
   const mutatedRendered = path.join(tempDir, "rendered-mutated.docx");
   const payload = JSON.parse(await fs.readFile(data, "utf8"));
   const firstKey = Object.keys(payload.fields)[0];
-  payload.fields[firstKey] = "替换后的动态文本";
+  payload.fields[firstKey] = "Replacement dynamic text";
   await fs.writeFile(mutatedData, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
   parseJson(await run(["template", "render", template, "--data", mutatedData, "--out", mutatedRendered]));
   const mutatedCompared = parseJson(await run(["template", "compare-format", sample, mutatedRendered]));

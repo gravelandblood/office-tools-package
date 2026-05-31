@@ -40,6 +40,10 @@ export const capabilities = {
     {
       id: "template.profile",
       description: "Extract a normalized DOCX template-detection profile with evidence, formatting atoms, and conflict signals."
+    },
+    {
+      id: "template.analyze",
+      description: "Analyze one or more DOCX examples into a Template Detective IR with rule candidates and conflicts."
     }
   ]
 };
@@ -509,6 +513,463 @@ function detectProfileSignals(profile) {
   return signals;
 }
 
+function makeEvidence(sourceId, details) {
+  return {
+    sourceId,
+    ...details
+  };
+}
+
+function addFormatAtom(atomMap, kind, fingerprint, properties, evidence) {
+  const key = `${kind}:${fingerprint}`;
+  if (!atomMap.has(key)) {
+    atomMap.set(key, {
+      id: `fmt.${kind}.${String(atomMap.size + 1).padStart(4, "0")}`,
+      kind,
+      fingerprint,
+      properties: properties || null,
+      evidence: [],
+      stability: "unknown"
+    });
+  }
+  atomMap.get(key).evidence.push(evidence);
+  return atomMap.get(key).id;
+}
+
+function blockSignature(node) {
+  if (node.kind === "paragraph") {
+    return `p:${node.part}:${node.index}`;
+  }
+  if (node.kind === "table") {
+    return `tbl:${node.part}:${node.index}`;
+  }
+  return `${node.kind}:${node.part || ""}:${node.index ?? ""}`;
+}
+
+function textClass(text) {
+  const value = String(text || "").trim();
+  if (!value) return "empty";
+  if (/^\d{4}[-/.年]\d{1,2}([-/.月]\d{1,2}日?)?$/u.test(value)) return "date";
+  if (/^[\d,]+(\.\d+)?%?$/u.test(value)) return "number";
+  if (valueHasLabel(value)) return "labelValue";
+  if (value.length <= 12) return "shortText";
+  return "longText";
+}
+
+function valueHasLabel(value) {
+  return /[:：]/u.test(value) && value.replace(/[:：].*$/u, "").trim().length <= 20;
+}
+
+function splitLabelValue(value) {
+  const match = String(value || "").match(/^(.{1,30}?)[：:]\s*(.+)$/u);
+  if (!match) return null;
+  return {
+    label: match[1].trim(),
+    value: match[2].trim()
+  };
+}
+
+function collectDocumentBlocks(profile, sourceId) {
+  const blocks = [];
+  for (const part of profile.parts) {
+    for (const paragraph of part.paragraphs) {
+      blocks.push({
+        id: `${sourceId}.p.${String(blocks.length + 1).padStart(4, "0")}`,
+        kind: "paragraph",
+        sourceId,
+        part: part.name,
+        index: paragraph.index,
+        text: paragraph.text,
+        textPreview: paragraph.text.slice(0, 120),
+        structureFingerprint: paragraph.formatFingerprint,
+        formatFingerprint: paragraph.paragraphPropertiesFingerprint,
+        runFormatFingerprints: paragraph.runs.map((run) => run.formatFingerprint),
+        styleId: paragraph.styleId,
+        evidence: makeEvidence(sourceId, {
+          part: part.name,
+          paragraphIndex: paragraph.index,
+          path: paragraph.evidence.path,
+          textPreview: paragraph.text.slice(0, 120),
+          fingerprint: paragraph.formatFingerprint
+        }),
+        original: paragraph
+      });
+    }
+    for (const table of part.tables) {
+      blocks.push({
+        id: `${sourceId}.tbl.${String(blocks.length + 1).padStart(4, "0")}`,
+        kind: "table",
+        sourceId,
+        part: part.name,
+        index: table.index,
+        text: table.rows.map((row) => row.text).join("\n"),
+        textPreview: table.rows.slice(0, 3).map((row) => row.text).join(" | ").slice(0, 120),
+        structureFingerprint: table.formatFingerprint,
+        formatFingerprint: table.tablePropertiesFingerprint,
+        rowCount: table.rowCount,
+        columnCount: table.columnCount,
+        evidence: makeEvidence(sourceId, {
+          part: part.name,
+          tableIndex: table.index,
+          path: table.evidence.path,
+          textPreview: table.rows.slice(0, 3).map((row) => row.text).join(" | ").slice(0, 120),
+          fingerprint: table.formatFingerprint
+        }),
+        original: table
+      });
+    }
+  }
+  return blocks.sort((left, right) => {
+    if (left.part !== right.part) return left.part.localeCompare(right.part);
+    return left.index - right.index;
+  });
+}
+
+function buildProfileSource(inputDocx, profile, index) {
+  return {
+    id: `src${String(index + 1).padStart(3, "0")}`,
+    docxPath: path.resolve(inputDocx),
+    role: index === 0 ? "baseline" : "example",
+    fingerprint: profile.package.fingerprint,
+    profile
+  };
+}
+
+function inferStructureAndAtoms(sources, atomMap) {
+  const structure = [];
+  for (const source of sources) {
+    const blocks = collectDocumentBlocks(source.profile, source.id);
+    for (const block of blocks) {
+      const formatAtomRefs = [];
+      if (block.kind === "paragraph") {
+        formatAtomRefs.push(addFormatAtom(
+          atomMap,
+          "paragraph",
+          block.original.paragraphPropertiesFingerprint,
+          block.original.pPr,
+          block.evidence
+        ));
+        for (const run of block.original.runs) {
+          formatAtomRefs.push(addFormatAtom(
+            atomMap,
+            "run",
+            run.formatFingerprint,
+            run.rPr,
+            makeEvidence(source.id, {
+              part: block.part,
+              paragraphIndex: block.index,
+              runIndex: run.index,
+              path: run.evidence.path,
+              textPreview: run.text.slice(0, 80),
+              fingerprint: run.formatFingerprint
+            })
+          ));
+        }
+      } else if (block.kind === "table") {
+        formatAtomRefs.push(addFormatAtom(
+          atomMap,
+          "table",
+          block.original.tablePropertiesFingerprint,
+          { tblPr: block.original.tblPr, tblGrid: block.original.tblGrid },
+          block.evidence
+        ));
+        for (const row of block.original.rows) {
+          formatAtomRefs.push(addFormatAtom(
+            atomMap,
+            "row",
+            row.rowPropertiesFingerprint,
+            row.trPr,
+            makeEvidence(source.id, {
+              part: block.part,
+              tableIndex: block.index,
+              rowIndex: row.index,
+              textPreview: row.text.slice(0, 80),
+              fingerprint: row.rowPropertiesFingerprint
+            })
+          ));
+          for (const cell of row.cells) {
+            formatAtomRefs.push(addFormatAtom(
+              atomMap,
+              "cell",
+              cell.cellPropertiesFingerprint,
+              cell.tcPr,
+              makeEvidence(source.id, {
+                part: block.part,
+                tableIndex: block.index,
+                rowIndex: row.index,
+                cellIndex: cell.index,
+                textPreview: cell.text.slice(0, 80),
+                fingerprint: cell.cellPropertiesFingerprint
+              })
+            ));
+          }
+        }
+      }
+
+      structure.push({
+        id: `node.${String(structure.length + 1).padStart(4, "0")}`,
+        kind: block.kind,
+        sourceRefs: [block.evidence],
+        formatAtomRefs: Array.from(new Set(formatAtomRefs)),
+        textPreview: block.textPreview,
+        roleCandidates: inferRoleCandidates(block),
+        signature: blockSignature(block),
+        children: []
+      });
+    }
+  }
+  return structure;
+}
+
+function inferRoleCandidates(block) {
+  if (block.kind === "table") {
+    const candidates = ["table"];
+    if (block.rowCount > 2) candidates.push("loopCandidate");
+    return candidates;
+  }
+  const text = String(block.text || "").trim();
+  if (!text) return ["empty"];
+  const candidates = [];
+  if (valueHasLabel(text)) candidates.push("labelValue");
+  if (/^[一二三四五六七八九十]+[、.．]/u.test(text) || /^\d+[.．、]/u.test(text)) candidates.push("numberedHeading");
+  if (text.length <= 30 && block.original.runs.some((run) => run.rPr?.["w:b"] !== undefined)) candidates.push("heading");
+  if (text.length > 80) candidates.push("body");
+  if (!candidates.length) candidates.push(textClass(text));
+  return candidates;
+}
+
+function groupBlocksForRules(sources) {
+  const byPosition = new Map();
+  for (const source of sources) {
+    for (const block of collectDocumentBlocks(source.profile, source.id)) {
+      const key = blockSignature(block);
+      if (!byPosition.has(key)) byPosition.set(key, []);
+      byPosition.get(key).push(block);
+    }
+  }
+  return byPosition;
+}
+
+function inferRulesAndConflicts(sources) {
+  const rules = [];
+  const conflicts = [];
+  const dataFields = {};
+  const arrays = {};
+  const groups = groupBlocksForRules(sources);
+  let fieldIndex = 1;
+  let arrayIndex = 1;
+
+  for (const [signature, blocks] of groups) {
+    const sourceCount = new Set(blocks.map((block) => block.sourceId)).size;
+    const texts = new Set(blocks.map((block) => block.text));
+    const formats = new Set(blocks.map((block) => block.formatFingerprint));
+    const first = blocks[0];
+    const evidences = blocks.map((block) => block.evidence);
+
+    if (sourceCount < sources.length) {
+      conflicts.push({
+        id: `conflict.${String(conflicts.length + 1).padStart(4, "0")}`,
+        type: "optionalBlockAmbiguity",
+        severity: "medium",
+        classification: "unresolvedConflict",
+        evidence: evidences,
+        recommendedAction: "Confirm whether this block is optional or missing because samples are not structurally aligned.",
+        signature,
+        presentIn: sourceCount,
+        expectedSources: sources.length
+      });
+    }
+
+    if (first.kind === "paragraph") {
+      const labelValue = blocks.map((block) => splitLabelValue(block.text));
+      const hasConsistentLabel = labelValue.every(Boolean)
+        && new Set(labelValue.map((item) => item.label)).size === 1;
+      const valueSet = new Set(labelValue.filter(Boolean).map((item) => item.value));
+
+      if (hasConsistentLabel && valueSet.size > 1) {
+        const fieldName = semanticFieldName(labelValue[0].label, fieldIndex);
+        fieldIndex += 1;
+        dataFields[fieldName] = {
+          type: inferFieldType(Array.from(valueSet)),
+          description: `Value after label ${labelValue[0].label}`,
+          examples: Array.from(valueSet).slice(0, 5),
+          confidence: 0.72
+        };
+        rules.push({
+          id: `rule.${String(rules.length + 1).padStart(4, "0")}`,
+          kind: "slot",
+          target: signature,
+          expression: fieldName,
+          confidence: 0.72,
+          evidence: evidences,
+          alternatives: [{ kind: "staticText", reason: "Could be fixed if samples refer to different reports rather than one template." }],
+          validationStatus: "unverified",
+          label: labelValue[0].label
+        });
+      } else if (texts.size === 1 && first.text.trim()) {
+        rules.push({
+          id: `rule.${String(rules.length + 1).padStart(4, "0")}`,
+          kind: "staticText",
+          target: signature,
+          value: first.text,
+          confidence: sourceCount === sources.length ? 0.86 : 0.55,
+          evidence: evidences,
+          alternatives: [],
+          validationStatus: "unverified"
+        });
+      } else if (texts.size > 1 && sourceCount > 1) {
+        const fieldName = `field.${String(fieldIndex).padStart(3, "0")}`;
+        fieldIndex += 1;
+        dataFields[fieldName] = {
+          type: inferFieldType(Array.from(texts)),
+          description: `Variable paragraph at ${signature}`,
+          examples: Array.from(texts).slice(0, 5),
+          confidence: 0.48
+        };
+        rules.push({
+          id: `rule.${String(rules.length + 1).padStart(4, "0")}`,
+          kind: "slot",
+          target: signature,
+          expression: fieldName,
+          confidence: 0.48,
+          evidence: evidences,
+          alternatives: [{ kind: "conditional", reason: "Paragraph may represent different optional content rather than one scalar field." }],
+          validationStatus: "unverified"
+        });
+      }
+    }
+
+    if (first.kind === "table") {
+      const rowCounts = new Set(blocks.map((block) => block.rowCount));
+      if (rowCounts.size > 1 || first.rowCount > 2) {
+        const arrayName = `table${String(arrayIndex).padStart(3, "0")}.rows`;
+        arrayIndex += 1;
+        arrays[arrayName] = {
+          type: "array",
+          description: `Rows inferred from table at ${signature}`,
+          examples: blocks.map((block) => ({
+            rowCount: block.rowCount,
+            columnCount: block.columnCount,
+            preview: block.textPreview
+          })),
+          confidence: rowCounts.size > 1 ? 0.68 : 0.42
+        };
+        rules.push({
+          id: `rule.${String(rules.length + 1).padStart(4, "0")}`,
+          kind: "loop",
+          target: signature,
+          expression: arrayName,
+          confidence: rowCounts.size > 1 ? 0.68 : 0.42,
+          evidence: evidences,
+          alternatives: [{ kind: "staticTable", reason: "Repeated rows may be fixed report layout if row count does not change across samples." }],
+          validationStatus: "unverified"
+        });
+      }
+    }
+
+    if (formats.size > 1) {
+      conflicts.push({
+        id: `conflict.${String(conflicts.length + 1).padStart(4, "0")}`,
+        type: first.kind === "table" ? "tableShapeAmbiguity" : "sameRoleDifferentFormat",
+        severity: "medium",
+        classification: "unresolvedConflict",
+        evidence: evidences,
+        recommendedAction: "Review whether the differing format is a condition, a sample anomaly, or direct-format drift.",
+        signature,
+        formatVariantCount: formats.size
+      });
+    }
+  }
+
+  return { rules, conflicts, dataFields, arrays };
+}
+
+function semanticFieldName(label, fallbackIndex) {
+  const normalized = String(label || "")
+    .replace(/\s+/gu, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+  const dictionary = [
+    [/公司|企业|单位/u, "company.name"],
+    [/日期|时间/u, "report.date"],
+    [/姓名|负责人|联系人/u, "person.name"],
+    [/金额|价款|总额/u, "amount"],
+    [/地址|住所/u, "address"]
+  ];
+  for (const [pattern, name] of dictionary) {
+    if (pattern.test(normalized)) return name;
+  }
+  return `field.${String(fallbackIndex).padStart(3, "0")}`;
+}
+
+function inferFieldType(values) {
+  if (values.every((value) => textClass(value) === "date")) return "date";
+  if (values.every((value) => textClass(value) === "number")) return "number";
+  return "string";
+}
+
+function finalizeFormatAtomStability(formatAtoms, sourcesLength) {
+  return formatAtoms.map((atom) => {
+    const sourceIds = new Set(atom.evidence.map((item) => item.sourceId));
+    return {
+      ...atom,
+      stability: sourceIds.size === sourcesLength && atom.evidence.length >= sourcesLength ? "stable" : "variant"
+    };
+  });
+}
+
+async function analyzeDocxInputs(inputDocxPaths) {
+  const sources = [];
+  for (let index = 0; index < inputDocxPaths.length; index += 1) {
+    const zip = await loadDocx(inputDocxPaths[index]);
+    const profile = await profileZip(zip);
+    sources.push(buildProfileSource(inputDocxPaths[index], profile, index));
+  }
+
+  const atomMap = new Map();
+  const structure = inferStructureAndAtoms(sources, atomMap);
+  const { rules, conflicts, dataFields, arrays } = inferRulesAndConflicts(sources);
+  const profileSignals = sources.flatMap((source) => source.profile.signals.map((signal) => ({
+    ...signal,
+    sourceId: source.id
+  })));
+
+  const ir = {
+    version: 1,
+    mode: inputDocxPaths.length > 1 ? "generalize" : "audit",
+    generatedAt: new Date().toISOString(),
+    sources: sources.map((source) => ({
+      id: source.id,
+      docxPath: source.docxPath,
+      role: source.role,
+      fingerprint: source.fingerprint
+    })),
+    formatAtoms: finalizeFormatAtomStability(Array.from(atomMap.values()), sources.length),
+    structure,
+    dataSchema: {
+      fields: dataFields,
+      arrays,
+      objects: {},
+      required: []
+    },
+    rules,
+    conflicts,
+    validation: [],
+    profileSignals,
+    summary: {
+      sourceCount: sources.length,
+      structureNodes: structure.length,
+      formatAtoms: atomMap.size,
+      rules: rules.length,
+      conflicts: conflicts.length,
+      fields: Object.keys(dataFields).length,
+      arrays: Object.keys(arrays).length,
+      profileSignals: profileSignals.length
+    }
+  };
+
+  return ir;
+}
+
 function collectParagraphs(node, result = []) {
   if (!node || typeof node !== "object") return result;
   if (Array.isArray(node)) {
@@ -734,6 +1195,42 @@ export async function profileDocx(inputDocx, options = {}) {
       package: profile.package,
       summary: profile.summary,
       signals: profile.signals
+    };
+  }
+
+  return result;
+}
+
+export async function analyzeTemplates(inputDocxPaths, options = {}) {
+  const inputs = asArray(inputDocxPaths).filter(Boolean);
+  if (!inputs.length) {
+    throw new Error("template analyze requires at least one input DOCX");
+  }
+
+  const ir = await analyzeDocxInputs(inputs);
+  const result = {
+    ok: true,
+    command: "template.analyze",
+    inputs: inputs.map((input) => path.resolve(input)),
+    ir
+  };
+
+  const outputPath = options.outputPath || options.out;
+  if (outputPath) {
+    await fs.mkdir(path.dirname(path.resolve(outputPath)), { recursive: true });
+    await fs.writeFile(outputPath, `${JSON.stringify(ir, null, 2)}\n`, "utf8");
+    result.output = path.resolve(outputPath);
+  }
+
+  if (options.summary) {
+    result.ir = {
+      version: ir.version,
+      mode: ir.mode,
+      generatedAt: ir.generatedAt,
+      sources: ir.sources,
+      summary: ir.summary,
+      conflicts: ir.conflicts.slice(0, 20),
+      profileSignals: ir.profileSignals.slice(0, 20)
     };
   }
 
