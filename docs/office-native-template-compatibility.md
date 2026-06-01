@@ -139,14 +139,15 @@ node packages/cli/bin/office-tools.js template compile-office baseline.docx --pl
 当前已落地：
 
 - `template plan-office`：生成 Office 原生补丁计划。
-- `template compile-office`：输入 baseline DOCX + office-plan.json，只对安全 scalar slot patch 包 content controls，并写入 custom XML part / relationship / content type。
-- 烟测覆盖：多样本分析、plan 生成、safe slot 编译、custom XML 生成、编译后段落/表格结构未丢失。
+- `template compile-office`：输入 baseline DOCX + office-plan.json，对安全 scalar slot 包 content controls；对能唯一定位的表格 body rows 包 Word repeating section / repeating section item；并写入 custom XML part / relationship / content type。
+- 烟测覆盖：多样本分析、plan 生成、safe slot 编译、table loop 编译、custom XML 生成、编译后段落/表格结构未丢失。
+- 真实样例回归：历史沿革报告 + 法律尽调报告律师样板中，9 个表格 loop 已全部编译为 repeating section，2 个字段控件编译成功，3 个字段因证据不足无法唯一定位而跳过。
 
 仍然保守跳过：
 
 - value 不在单个安全 run 里的 slot。
 - 需要跨 run 或跨段落包裹的字段。
-- 表格循环的 repeating section 实际写入。
+- 无法由 tableIndex + 表格预览唯一定位的表格循环。
 - 条件块的实际删除/保留渲染。
 - unresolved conflict 的自动裁决。
 

@@ -174,11 +174,38 @@ function paragraphBlocksFromXml(xml) {
   return blocks;
 }
 
+function tableBlocksFromXml(xml) {
+  const blocks = [];
+  const re = /<w:tbl\b[\s\S]*?<\/w:tbl>/gu;
+  let index = 0;
+  for (const match of xml.matchAll(re)) {
+    blocks.push({
+      index,
+      start: match.index,
+      end: match.index + match[0].length,
+      xml: match[0],
+      text: textFromXml(match[0])
+    });
+    index += 1;
+  }
+  return blocks;
+}
+
 function paragraphFingerprintFromXml(paragraphXml) {
   try {
     const parsed = parseXmlPart(paragraphXml);
     const paragraph = parsed["w:p"];
     return paragraph ? hashFingerprint(stripText(paragraph)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function tableFingerprintFromXml(tableXml) {
+  try {
+    const parsed = parseXmlPart(tableXml);
+    const table = parsed["w:tbl"];
+    return table ? hashFingerprint(stripText(table)) : null;
   } catch {
     return null;
   }
@@ -208,6 +235,35 @@ function locateParagraphBlock(xml, evidence) {
   return null;
 }
 
+function normalizePreviewText(text) {
+  return String(text || "").replace(/[\s|]+/gu, "");
+}
+
+function locateTableBlock(xml, evidence) {
+  const blocks = tableBlocksFromXml(xml).map((block) => ({
+    ...block,
+    fingerprint: tableFingerprintFromXml(block.xml)
+  }));
+  const preview = normalizePreviewText(evidence.textPreview || "");
+  const expectedFingerprint = evidence.fingerprint || null;
+  const hinted = Number.isInteger(evidence.tableIndex) ? blocks[evidence.tableIndex] : null;
+  if (hinted && normalizePreviewText(hinted.text).includes(preview)) {
+    return hinted;
+  }
+
+  const exact = blocks.filter((block) => (
+    normalizePreviewText(block.text).includes(preview)
+    && (!expectedFingerprint || block.fingerprint === expectedFingerprint)
+  ));
+  if (exact.length === 1) return exact[0];
+
+  const byFingerprint = expectedFingerprint ? blocks.filter((block) => block.fingerprint === expectedFingerprint) : [];
+  const byFingerprintAndText = byFingerprint.filter((block) => normalizePreviewText(block.text).includes(preview));
+  if (byFingerprintAndText.length === 1) return byFingerprintAndText[0];
+
+  return null;
+}
+
 function hasUnsupportedRangeMarkup(xml) {
   return /<w:(sdt|fldChar|instrText|drawing|pict|bookmarkStart|bookmarkEnd)\b/u.test(xml);
 }
@@ -232,6 +288,52 @@ function wrapRunWithContentControl(runXml, patch) {
     "</w:sdtContent>",
     "</w:sdt>"
   ].join("");
+}
+
+function wrapRowsWithRepeatingSection(rowsXml, patch) {
+  const title = escapeXmlAttr(patch.contentControl?.title || patch.ruleId || patch.id);
+  const tag = escapeXmlAttr(patch.contentControl?.tag || patch.ruleId || patch.id);
+  return [
+    "<w:sdt>",
+    "<w:sdtPr>",
+    `<w:alias w:val="${title}"/>`,
+    `<w:tag w:val="${tag}"/>`,
+    "<w15:repeatingSection/>",
+    "</w:sdtPr>",
+    "<w:sdtContent>",
+    "<w:sdt>",
+    "<w:sdtPr><w15:repeatingSectionItem/></w:sdtPr>",
+    "<w:sdtContent>",
+    rowsXml,
+    "</w:sdtContent>",
+    "</w:sdt>",
+    "</w:sdtContent>",
+    "</w:sdt>"
+  ].join("");
+}
+
+function ensureW15Namespace(xml) {
+  if (xml.includes("xmlns:w15=")) return xml;
+  return xml.replace(/<w:document\b([^>]*)>/u, (full, attrs) => (
+    `<w:document${attrs} xmlns:w15="http://schemas.microsoft.com/office/word/2012/wordml">`
+  ));
+}
+
+function rowBlocksFromTableXml(tableXml) {
+  const rows = [];
+  const re = /<w:tr\b[\s\S]*?<\/w:tr>/gu;
+  let index = 0;
+  for (const match of tableXml.matchAll(re)) {
+    rows.push({
+      index,
+      start: match.index,
+      end: match.index + match[0].length,
+      xml: match[0],
+      text: textFromXml(match[0])
+    });
+    index += 1;
+  }
+  return rows;
 }
 
 function findSingleRunForLabelValue(paragraphXml, label, value) {
@@ -299,10 +401,42 @@ function compileSlotPatchIntoPart(xml, patch) {
   };
 }
 
-function uniqueSortedFieldPatches(patches) {
+function compileLoopPatchIntoPart(xml, patch) {
+  const evidence = Array.isArray(patch.evidence) ? patch.evidence.find((item) => item.part && Number.isInteger(item.tableIndex)) : null;
+  if (!evidence || patch.ruleKind !== "loop" || !patch.contentControl) {
+    return { xml, applied: false, reason: "patch is not a table loop with evidence" };
+  }
+
+  const table = locateTableBlock(xml, evidence);
+  if (!table) {
+    return { xml, applied: false, reason: "target table was not found by text and fingerprint" };
+  }
+  if (hasUnsupportedRangeMarkup(table.xml)) {
+    return { xml, applied: false, reason: "target table already contains unsupported range markup" };
+  }
+
+  const rows = rowBlocksFromTableXml(table.xml);
+  if (rows.length < 2) {
+    return { xml, applied: false, reason: "table does not have a header row and repeatable body rows" };
+  }
+
+  const bodyRows = rows.slice(1);
+  const bodyStart = bodyRows[0].start;
+  const bodyEnd = bodyRows[bodyRows.length - 1].end;
+  const bodyXml = table.xml.slice(bodyStart, bodyEnd);
+  const wrappedBody = wrapRowsWithRepeatingSection(bodyXml, patch);
+  const wrappedTable = `${table.xml.slice(0, bodyStart)}${wrappedBody}${table.xml.slice(bodyEnd)}`;
+  return {
+    xml: ensureW15Namespace(`${xml.slice(0, table.start)}${wrappedTable}${xml.slice(table.end)}`),
+    applied: true,
+    reason: "wrapped table body rows with repeating section content control"
+  };
+}
+
+function uniqueSortedBindablePatches(patches) {
   const byPath = new Map();
   for (const patch of patches) {
-    if (patch.ruleKind !== "slot" || !patch.customXmlBinding?.xpath) continue;
+    if (!["slot", "loop"].includes(patch.ruleKind) || !patch.customXmlBinding?.xpath) continue;
     if (!byPath.has(patch.customXmlBinding.xpath)) byPath.set(patch.customXmlBinding.xpath, patch);
   }
   return Array.from(byPath.values()).sort((left, right) => (
@@ -328,19 +462,25 @@ function xmlTreeToString(name, node) {
   return `<${name}>${escapeXml(node.value || "")}</${name}>`;
 }
 
+function patchInitialValue(patch) {
+  const value = Array.isArray(patch.evidence) ? patch.evidence[0]?.textPreview || "" : "";
+  if (patch.ruleKind === "loop") {
+    return "";
+  }
+  const label = patch.label ? `${patch.label}${value.includes("：") ? "：" : ":"}` : "";
+  return patch.label && value.startsWith(patch.label)
+    ? value.slice(label.length).trim()
+    : value;
+}
+
 function buildCustomXmlData(patches) {
   const root = { children: new Map(), value: "" };
-  for (const patch of uniqueSortedFieldPatches(patches)) {
+  for (const patch of uniqueSortedBindablePatches(patches)) {
     const segments = patch.customXmlBinding.xpath
       .replace(/^\/template\/data\/?/u, "")
       .split("/")
       .filter(Boolean);
-    const value = Array.isArray(patch.evidence) ? patch.evidence[0]?.textPreview || "" : "";
-    const label = patch.label ? `${patch.label}${value.includes("：") ? "：" : ":"}` : "";
-    const cleanValue = patch.label && value.startsWith(patch.label)
-      ? value.slice(label.length).trim()
-      : value;
-    setDeepXmlValue(root, segments, cleanValue);
+    setDeepXmlValue(root, segments, patchInitialValue(patch));
   }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<template><data>${Array.from(root.children.entries()).map(([name, node]) => xmlTreeToString(name, node)).join("")}</data></template>`;
 }
@@ -380,14 +520,14 @@ function upsertContentTypeOverride(contentTypesXml, partName, contentType) {
 }
 
 async function addCustomXmlPart(zip, patches) {
-  const slotPatches = patches.filter((patch) => patch.ruleKind === "slot" && patch.customXmlBinding);
-  if (!slotPatches.length) return null;
+  const bindablePatches = patches.filter((patch) => ["slot", "loop"].includes(patch.ruleKind) && patch.customXmlBinding);
+  if (!bindablePatches.length) return null;
 
   const itemIndex = nextCustomXmlIndex(zip);
   const itemPath = `customXml/item${itemIndex}.xml`;
   const propsPath = `customXml/itemProps${itemIndex}.xml`;
   const itemRelsPath = `customXml/_rels/item${itemIndex}.xml.rels`;
-  const data = buildCustomXmlData(slotPatches);
+  const data = buildCustomXmlData(bindablePatches);
   const props = [
     "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
     `<ds:datastoreItem ds:itemID="${OFFICE_TEMPLATE_STORE_ITEM_ID}" xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml">`,
@@ -419,7 +559,8 @@ async function addCustomXmlPart(zip, patches) {
     item: itemPath,
     properties: propsPath,
     relationships: itemRelsPath,
-    fields: uniqueSortedFieldPatches(slotPatches).length
+    fields: bindablePatches.filter((patch) => patch.ruleKind === "slot").length,
+    arrays: bindablePatches.filter((patch) => patch.ruleKind === "loop").length
   };
 }
 
@@ -2131,8 +2272,8 @@ export async function compileOfficeTemplate(inputDocx, options = {}) {
   const skipped = [];
 
   for (const patch of plan.patches || []) {
-    if (patch.ruleKind !== "slot") {
-      skipped.push({ patchId: patch.id, ruleId: patch.ruleId, reason: "only safe scalar slot patches are implemented in this compiler pass" });
+    if (!["slot", "loop"].includes(patch.ruleKind)) {
+      skipped.push({ patchId: patch.id, ruleId: patch.ruleId, reason: "only safe scalar slots and table loops are implemented in this compiler pass" });
       continue;
     }
 
@@ -2143,7 +2284,10 @@ export async function compileOfficeTemplate(inputDocx, options = {}) {
       continue;
     }
 
-    const result = compileSlotPatchIntoPart(byPart.get(partName), patch);
+    const currentXml = byPart.get(partName);
+    const result = patch.ruleKind === "loop"
+      ? compileLoopPatchIntoPart(currentXml, patch)
+      : compileSlotPatchIntoPart(currentXml, patch);
     if (result.applied) {
       byPart.set(partName, result.xml);
       applied.push({ patchId: patch.id, ruleId: patch.ruleId, part: partName, reason: result.reason });

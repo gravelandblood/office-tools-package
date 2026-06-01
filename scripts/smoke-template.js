@@ -191,8 +191,8 @@ async function main() {
     "--plan", officePlan,
     "--out", officeNativeTemplate
   ]));
-  if (compiledOffice.appliedPatches < 2 || !compiledOffice.customXml?.fields) {
-    throw new Error(`Office-native compile did not apply expected scalar slots: ${JSON.stringify(compiledOffice, null, 2)}`);
+  if (compiledOffice.appliedPatches < 3 || !compiledOffice.customXml?.fields || !compiledOffice.customXml?.arrays) {
+    throw new Error(`Office-native compile did not apply expected scalar slots and table loops: ${JSON.stringify(compiledOffice, null, 2)}`);
   }
   const compiledInspected = parseJson(await run(["template", "inspect-format", officeNativeTemplate]));
   if (compiledInspected.profile.counts.paragraphs < 1 || compiledInspected.profile.counts.tables < 1) {
