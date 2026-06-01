@@ -67,6 +67,12 @@ node packages/cli/bin/office-tools.js template plan-office template-ir.json --ou
 node packages/cli/bin/office-tools.js template plan-office template-ir.json --summary
 ```
 
+把安全补丁编译回 Office 原生 DOCX：
+
+```powershell
+node packages/cli/bin/office-tools.js template compile-office baseline.docx --plan office-plan.json --out template.docx
+```
+
 `office-plan.json` 包含：
 
 - `patches`：真正需要应用到 DOCX 的结构补丁计划，例如 content control、repeating section、条件范围标记。
@@ -130,11 +136,18 @@ node packages/cli/bin/office-tools.js template plan-office template-ir.json --su
 
 ## 当前边界
 
-当前已落地的是 `template plan-office` 补丁计划生成，还没有直接修改 DOCX。下一步应实现一个确定性的 patcher：
+当前已落地：
 
-- 输入 baseline DOCX + office-plan.json。
-- 只对 plan 中的安全 patch 包 content controls。
-- 输出 Office 原生模板 DOCX/DOTX。
-- 再用样例数据回放和 `compare-format` 验证。
+- `template plan-office`：生成 Office 原生补丁计划。
+- `template compile-office`：输入 baseline DOCX + office-plan.json，只对安全 scalar slot patch 包 content controls，并写入 custom XML part / relationship / content type。
+- 烟测覆盖：多样本分析、plan 生成、safe slot 编译、custom XML 生成、编译后段落/表格结构未丢失。
+
+仍然保守跳过：
+
+- value 不在单个安全 run 里的 slot。
+- 需要跨 run 或跨段落包裹的字段。
+- 表格循环的 repeating section 实际写入。
+- 条件块的实际删除/保留渲染。
+- unresolved conflict 的自动裁决。
 
 注意：不能在当前 IR 只定位到段落/表格块时贸然写入 DOCX。例如 `公司名称：某某公司` 这种字段，原生 content control 应包住冒号后的 value，而不是把整个段落含 label 都变成可替换字段。因此 `plan-office` 会为每个 patch 输出 `compileReadiness`，只有定位到 exact run/text-node/table-row/block range 后，patcher 才能实际修改 DOCX。

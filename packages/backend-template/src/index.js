@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import JSZip from "jszip";
 import { XMLParser } from "fast-xml-parser";
 
@@ -8,6 +9,7 @@ const XML_DECLARATION = /^<\?xml[^>]*>\s*/u;
 const TEXT_NODE_RE = /<w:t\b([^>]*)>([\s\S]*?)<\/w:t>/gu;
 const TAG_RE = /<[^>]+>/gu;
 const PARSED_TEXT_KEYS = new Set(["w:t", "w:delText", "w:instrText", "w:delInstrText"]);
+const OFFICE_TEMPLATE_STORE_ITEM_ID = "{B5F04A55-6F5D-4F32-9E3F-0B6720E8E1D2}";
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -48,6 +50,10 @@ export const capabilities = {
     {
       id: "template.planOffice",
       description: "Map Template Detective IR to an Office-native template patch plan using content controls, custom XML, repeating sections, and sidecar gaps."
+    },
+    {
+      id: "template.compileOffice",
+      description: "Compile safe Office-native template patches into a DOCX using content controls and custom XML parts."
     }
   ]
 };
@@ -57,6 +63,12 @@ function escapeXml(text) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function escapeXmlAttr(text) {
+  return escapeXml(text)
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 function decodeXmlText(text) {
@@ -143,6 +155,272 @@ function renderXml(xml, data) {
     const nextAttrs = attrs.includes("xml:space=") ? attrs : `${attrs} xml:space="preserve"`;
     return `<w:t${nextAttrs}>${escapeXml(rendered)}</w:t>`;
   });
+}
+
+function paragraphBlocksFromXml(xml) {
+  const blocks = [];
+  const re = /<w:p\b[\s\S]*?<\/w:p>/gu;
+  let index = 0;
+  for (const match of xml.matchAll(re)) {
+    blocks.push({
+      index,
+      start: match.index,
+      end: match.index + match[0].length,
+      xml: match[0],
+      text: textFromXml(match[0])
+    });
+    index += 1;
+  }
+  return blocks;
+}
+
+function paragraphFingerprintFromXml(paragraphXml) {
+  try {
+    const parsed = parseXmlPart(paragraphXml);
+    const paragraph = parsed["w:p"];
+    return paragraph ? hashFingerprint(stripText(paragraph)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function locateParagraphBlock(xml, evidence) {
+  const blocks = paragraphBlocksFromXml(xml).map((block) => ({
+    ...block,
+    fingerprint: paragraphFingerprintFromXml(block.xml)
+  }));
+  const preview = evidence.textPreview || "";
+  const expectedFingerprint = evidence.fingerprint || null;
+  const hinted = Number.isInteger(evidence.paragraphIndex) ? blocks[evidence.paragraphIndex] : null;
+  if (hinted && hinted.text === preview && (!expectedFingerprint || hinted.fingerprint === expectedFingerprint)) {
+    return hinted;
+  }
+
+  const exact = blocks.filter((block) => (
+    block.text === preview && (!expectedFingerprint || block.fingerprint === expectedFingerprint)
+  ));
+  if (exact.length === 1) return exact[0];
+
+  const byFingerprint = expectedFingerprint ? blocks.filter((block) => block.fingerprint === expectedFingerprint) : [];
+  const byFingerprintAndText = byFingerprint.filter((block) => block.text === preview);
+  if (byFingerprintAndText.length === 1) return byFingerprintAndText[0];
+
+  return null;
+}
+
+function hasUnsupportedRangeMarkup(xml) {
+  return /<w:(sdt|fldChar|instrText|drawing|pict|bookmarkStart|bookmarkEnd)\b/u.test(xml);
+}
+
+function wrapRunWithContentControl(runXml, patch) {
+  const title = escapeXmlAttr(patch.contentControl?.title || patch.ruleId || patch.id);
+  const tag = escapeXmlAttr(patch.contentControl?.tag || patch.ruleId || patch.id);
+  const binding = patch.customXmlBinding;
+  const dataBinding = binding
+    ? `<w:dataBinding w:storeItemID="${escapeXmlAttr(binding.storeItemId || OFFICE_TEMPLATE_STORE_ITEM_ID)}" w:xpath="${escapeXmlAttr(binding.xpath)}" w:prefixMappings="${escapeXmlAttr(binding.prefixMappings || "")}"/>`
+    : "";
+  return [
+    "<w:sdt>",
+    "<w:sdtPr>",
+    `<w:alias w:val="${title}"/>`,
+    `<w:tag w:val="${tag}"/>`,
+    "<w:text/>",
+    dataBinding,
+    "</w:sdtPr>",
+    "<w:sdtContent>",
+    runXml,
+    "</w:sdtContent>",
+    "</w:sdt>"
+  ].join("");
+}
+
+function findSingleRunForLabelValue(paragraphXml, label, value) {
+  if (!label || !value || hasUnsupportedRangeMarkup(paragraphXml)) return null;
+  const paragraphText = textFromXml(paragraphXml);
+  if (!paragraphText.includes(label) || !paragraphText.endsWith(value)) return null;
+
+  const runRe = /<w:r\b[\s\S]*?<\/w:r>/gu;
+  const runs = Array.from(paragraphXml.matchAll(runRe)).map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+    xml: match[0],
+    text: textFromXml(match[0])
+  }));
+  const exactRuns = runs.filter((run) => run.text === value);
+  if (exactRuns.length === 1) return exactRuns[0];
+
+  const suffixRuns = runs.filter((run) => run.text.endsWith(value) && !run.text.includes(label));
+  if (suffixRuns.length === 1) return suffixRuns[0];
+
+  return null;
+}
+
+function findSingleRunForWholeParagraphValue(paragraphXml, value) {
+  if (!value || hasUnsupportedRangeMarkup(paragraphXml)) return null;
+  if (textFromXml(paragraphXml) !== value) return null;
+
+  const runRe = /<w:r\b[\s\S]*?<\/w:r>/gu;
+  const runs = Array.from(paragraphXml.matchAll(runRe)).map((match) => ({
+    start: match.index,
+    end: match.index + match[0].length,
+    xml: match[0],
+    text: textFromXml(match[0])
+  })).filter((run) => run.text.length > 0);
+  if (runs.length === 1 && runs[0].text === value) return runs[0];
+  return null;
+}
+
+function compileSlotPatchIntoPart(xml, patch) {
+  const evidence = Array.isArray(patch.evidence) ? patch.evidence.find((item) => item.part && Number.isInteger(item.paragraphIndex)) : null;
+  if (!evidence || patch.ruleKind !== "slot" || !patch.contentControl) {
+    return { xml, applied: false, reason: "patch is not a paragraph slot with evidence" };
+  }
+
+  const paragraph = locateParagraphBlock(xml, evidence);
+  if (!paragraph) {
+    return { xml, applied: false, reason: "target paragraph was not found by text and fingerprint" };
+  }
+
+  const label = patch.label || null;
+  const preview = evidence.textPreview || "";
+  const value = label && preview.startsWith(label) ? preview.slice(label.length).replace(/^[:\uFF1A]\s*/u, "") : null;
+  const run = label
+    ? findSingleRunForLabelValue(paragraph.xml, label, value)
+    : findSingleRunForWholeParagraphValue(paragraph.xml, preview);
+  if (!run) {
+    return { xml, applied: false, reason: "slot value is not isolated in one safe run" };
+  }
+
+  const wrappedParagraph = `${paragraph.xml.slice(0, run.start)}${wrapRunWithContentControl(run.xml, patch)}${paragraph.xml.slice(run.end)}`;
+  return {
+    xml: `${xml.slice(0, paragraph.start)}${wrappedParagraph}${xml.slice(paragraph.end)}`,
+    applied: true,
+    reason: "wrapped value run with plain-text content control"
+  };
+}
+
+function uniqueSortedFieldPatches(patches) {
+  const byPath = new Map();
+  for (const patch of patches) {
+    if (patch.ruleKind !== "slot" || !patch.customXmlBinding?.xpath) continue;
+    if (!byPath.has(patch.customXmlBinding.xpath)) byPath.set(patch.customXmlBinding.xpath, patch);
+  }
+  return Array.from(byPath.values()).sort((left, right) => (
+    left.customXmlBinding.xpath.localeCompare(right.customXmlBinding.xpath)
+  ));
+}
+
+function setDeepXmlValue(root, segments, value) {
+  let cursor = root;
+  for (const segment of segments) {
+    if (!segment) continue;
+    if (!cursor.children.has(segment)) cursor.children.set(segment, { children: new Map(), value: "" });
+    cursor = cursor.children.get(segment);
+  }
+  cursor.value = value;
+}
+
+function xmlTreeToString(name, node) {
+  const children = Array.from(node.children.entries())
+    .map(([childName, child]) => xmlTreeToString(childName, child))
+    .join("");
+  if (children) return `<${name}>${children}</${name}>`;
+  return `<${name}>${escapeXml(node.value || "")}</${name}>`;
+}
+
+function buildCustomXmlData(patches) {
+  const root = { children: new Map(), value: "" };
+  for (const patch of uniqueSortedFieldPatches(patches)) {
+    const segments = patch.customXmlBinding.xpath
+      .replace(/^\/template\/data\/?/u, "")
+      .split("/")
+      .filter(Boolean);
+    const value = Array.isArray(patch.evidence) ? patch.evidence[0]?.textPreview || "" : "";
+    const label = patch.label ? `${patch.label}${value.includes("：") ? "：" : ":"}` : "";
+    const cleanValue = patch.label && value.startsWith(patch.label)
+      ? value.slice(label.length).trim()
+      : value;
+    setDeepXmlValue(root, segments, cleanValue);
+  }
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<template><data>${Array.from(root.children.entries()).map(([name, node]) => xmlTreeToString(name, node)).join("")}</data></template>`;
+}
+
+function nextCustomXmlIndex(zip) {
+  const indexes = Object.keys(zip.files)
+    .map((name) => name.match(/^customXml\/item(\d+)\.xml$/u))
+    .filter(Boolean)
+    .map((match) => Number(match[1]));
+  return indexes.length ? Math.max(...indexes) + 1 : 1;
+}
+
+function relationshipXml(id, type, target) {
+  return `<Relationship Id="${escapeXmlAttr(id)}" Type="${escapeXmlAttr(type)}" Target="${escapeXmlAttr(target)}"/>`;
+}
+
+function upsertRelationship(relsXml, relationship) {
+  if (relsXml.includes(`Target="${escapeXmlAttr(relationship.target)}"`)) return relsXml;
+  const entry = relationshipXml(relationship.id, relationship.type, relationship.target);
+  if (relsXml.includes("</Relationships>")) {
+    return relsXml.replace("</Relationships>", `${entry}</Relationships>`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${entry}</Relationships>`;
+}
+
+function contentTypeOverride(partName, contentType) {
+  return `<Override PartName="${escapeXmlAttr(partName)}" ContentType="${escapeXmlAttr(contentType)}"/>`;
+}
+
+function upsertContentTypeOverride(contentTypesXml, partName, contentType) {
+  if (contentTypesXml.includes(`PartName="${escapeXmlAttr(partName)}"`)) return contentTypesXml;
+  const entry = contentTypeOverride(partName, contentType);
+  if (contentTypesXml.includes("</Types>")) {
+    return contentTypesXml.replace("</Types>", `${entry}</Types>`);
+  }
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">${entry}</Types>`;
+}
+
+async function addCustomXmlPart(zip, patches) {
+  const slotPatches = patches.filter((patch) => patch.ruleKind === "slot" && patch.customXmlBinding);
+  if (!slotPatches.length) return null;
+
+  const itemIndex = nextCustomXmlIndex(zip);
+  const itemPath = `customXml/item${itemIndex}.xml`;
+  const propsPath = `customXml/itemProps${itemIndex}.xml`;
+  const itemRelsPath = `customXml/_rels/item${itemIndex}.xml.rels`;
+  const data = buildCustomXmlData(slotPatches);
+  const props = [
+    "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
+    `<ds:datastoreItem ds:itemID="${OFFICE_TEMPLATE_STORE_ITEM_ID}" xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml">`,
+    "<ds:schemaRefs/>",
+    "</ds:datastoreItem>"
+  ].join("");
+  const itemRels = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps\" Target=\"itemProps" + itemIndex + ".xml\"/></Relationships>";
+
+  zip.file(itemPath, data);
+  zip.file(propsPath, props);
+  zip.file(itemRelsPath, itemRels);
+
+  const relsPath = "_rels/.rels";
+  const relsXml = zip.file(relsPath) ? await zip.file(relsPath).async("string") : "";
+  const relId = `rIdOfficeToolsTemplate${crypto.createHash("sha1").update(itemPath).digest("hex").slice(0, 8)}`;
+  zip.file(relsPath, upsertRelationship(relsXml, {
+    id: relId,
+    type: "http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml",
+    target: itemPath
+  }));
+
+  const contentTypesPath = "[Content_Types].xml";
+  const contentTypesXml = zip.file(contentTypesPath) ? await zip.file(contentTypesPath).async("string") : "";
+  let nextContentTypes = upsertContentTypeOverride(contentTypesXml, `/${itemPath}`, "application/xml");
+  nextContentTypes = upsertContentTypeOverride(nextContentTypes, `/${propsPath}`, "application/vnd.openxmlformats-officedocument.customXmlProperties+xml");
+  zip.file(contentTypesPath, nextContentTypes);
+
+  return {
+    item: itemPath,
+    properties: propsPath,
+    relationships: itemRelsPath,
+    fields: uniqueSortedFieldPatches(slotPatches).length
+  };
 }
 
 function textFromXml(xml) {
@@ -1356,6 +1634,8 @@ function buildOfficePatch(rule, index) {
     ruleId: rule.id,
     ruleKind: rule.kind,
     target: rule.target,
+    label: rule.label || null,
+    expression: rule.expression || null,
     evidence: rule.evidence,
     confidence: capability.confidence,
     officeNative: capability.native,
@@ -1376,7 +1656,7 @@ function buildOfficePatch(rule, index) {
         lockContents: false
       },
       customXmlBinding: {
-        storeItemId: "{office-tools-template-data}",
+        storeItemId: OFFICE_TEMPLATE_STORE_ITEM_ID,
         xpath: `/template/data/${fieldPath.replace(/[.[\]-]+/gu, "/")}`,
         prefixMappings: ""
       },
@@ -1395,7 +1675,7 @@ function buildOfficePatch(rule, index) {
         lockContents: false
       },
       customXmlBinding: {
-        storeItemId: "{office-tools-template-data}",
+        storeItemId: OFFICE_TEMPLATE_STORE_ITEM_ID,
         xpath: `/template/data/${fieldPath.replace(/[.[\]-]+/gu, "/")}`,
         prefixMappings: ""
       },
@@ -1834,6 +2114,64 @@ export async function planOfficeTemplate(irPath, options = {}) {
   }
 
   return result;
+}
+
+export async function compileOfficeTemplate(inputDocx, options = {}) {
+  const planPath = options.planPath || options.plan;
+  const outputPath = options.outputPath || options.out;
+  if (!inputDocx || !planPath || !outputPath) {
+    throw new Error("template compile-office requires <input.docx> --plan <office-plan.json> --out <template.docx>");
+  }
+
+  const plan = JSON.parse(await fs.readFile(planPath, "utf8"));
+  const zip = await loadDocx(inputDocx);
+  const parts = await readWordParts(zip);
+  const byPart = new Map(parts.map((part) => [part.name, part.xml]));
+  const applied = [];
+  const skipped = [];
+
+  for (const patch of plan.patches || []) {
+    if (patch.ruleKind !== "slot") {
+      skipped.push({ patchId: patch.id, ruleId: patch.ruleId, reason: "only safe scalar slot patches are implemented in this compiler pass" });
+      continue;
+    }
+
+    const evidence = Array.isArray(patch.evidence) ? patch.evidence.find((item) => item.part) : null;
+    const partName = evidence?.part;
+    if (!partName || !byPart.has(partName)) {
+      skipped.push({ patchId: patch.id, ruleId: patch.ruleId, reason: "target part was not found" });
+      continue;
+    }
+
+    const result = compileSlotPatchIntoPart(byPart.get(partName), patch);
+    if (result.applied) {
+      byPart.set(partName, result.xml);
+      applied.push({ patchId: patch.id, ruleId: patch.ruleId, part: partName, reason: result.reason });
+    } else {
+      skipped.push({ patchId: patch.id, ruleId: patch.ruleId, part: partName, reason: result.reason });
+    }
+  }
+
+  for (const [partName, xml] of byPart.entries()) {
+    zip.file(partName, xml);
+  }
+  const customXml = await addCustomXmlPart(zip, (plan.patches || []).filter((patch) => applied.some((item) => item.patchId === patch.id)));
+  await writeDocx(zip, outputPath);
+  const profile = await inspectZip(zip);
+
+  return {
+    ok: true,
+    command: "template.compileOffice",
+    input: path.resolve(inputDocx),
+    plan: path.resolve(planPath),
+    output: path.resolve(outputPath),
+    appliedPatches: applied.length,
+    skippedPatches: skipped.length,
+    customXml,
+    applied,
+    skipped,
+    profileFingerprint: profile.packageFingerprint
+  };
 }
 
 export async function inferFormatTemplate(inputDocx, options = {}) {

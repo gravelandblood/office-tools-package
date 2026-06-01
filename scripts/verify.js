@@ -112,7 +112,8 @@ async function main() {
     "template.inspectFormat",
     "template.profile",
     "template.analyze",
-    "template.planOffice"
+    "template.planOffice",
+    "template.compileOffice"
   ]) {
     if (!templateIds.has(id)) {
       throw new Error(`Missing capability: ${id}`);
@@ -123,7 +124,7 @@ async function main() {
     label: "office-tools --help"
   });
   assertOk(help);
-  for (const text of ["pdf to-image-pdf", "file slim", "template infer-format", "template profile", "template analyze", "template plan-office", "wps-uia dump-window"]) {
+  for (const text of ["pdf to-image-pdf", "file slim", "template infer-format", "template profile", "template analyze", "template plan-office", "template compile-office", "wps-uia dump-window"]) {
     if (!help.stdout.includes(text)) {
       throw new Error(`Help output missing: ${text}`);
     }

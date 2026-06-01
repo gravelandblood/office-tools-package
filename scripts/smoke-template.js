@@ -131,6 +131,7 @@ async function main() {
   const detectiveIr = path.join(tempDir, "detective-ir.json");
   const detectiveIrMulti = path.join(tempDir, "detective-ir-multi.json");
   const officePlan = path.join(tempDir, "office-plan.json");
+  const officeNativeTemplate = path.join(tempDir, "office-native-template.docx");
   const rendered = path.join(tempDir, "rendered.docx");
 
   await writeSampleDocx(sample);
@@ -184,6 +185,18 @@ async function main() {
   }
   if (!fullPlan.preserves?.length || fullPlan.summary.patches !== fullPlan.summary.actualPatchCount) {
     throw new Error("Office plan should separate actual patches from static preserve items.");
+  }
+  const compiledOffice = parseJson(await run([
+    "template", "compile-office", sample,
+    "--plan", officePlan,
+    "--out", officeNativeTemplate
+  ]));
+  if (compiledOffice.appliedPatches < 2 || !compiledOffice.customXml?.fields) {
+    throw new Error(`Office-native compile did not apply expected scalar slots: ${JSON.stringify(compiledOffice, null, 2)}`);
+  }
+  const compiledInspected = parseJson(await run(["template", "inspect-format", officeNativeTemplate]));
+  if (compiledInspected.profile.counts.paragraphs < 1 || compiledInspected.profile.counts.tables < 1) {
+    throw new Error(`Compiled Office-native template lost document structure: ${JSON.stringify(compiledInspected, null, 2)}`);
   }
 
   const inferred = parseJson(await run([

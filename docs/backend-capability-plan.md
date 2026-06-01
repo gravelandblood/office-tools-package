@@ -37,6 +37,9 @@ Template note:
 - Office-native template compilation means wrapping existing DOCX ranges with
   content controls, adding custom XML parts/bindings, and preserving existing
   styles/numbering/table properties.
+- `template compile-office` is the first implementation of that route: it
+  applies only safe scalar slot patches whose value is isolated in one run, and
+  skips loops/conditions until exact row/block ranges are available.
 - Sidecar rules for conditions and complex loops should be applied by a
   deterministic OOXML patcher, then verified with `template compare-format`.
 - Use WPS/Word COM or JSAPI only when real application behavior is required:

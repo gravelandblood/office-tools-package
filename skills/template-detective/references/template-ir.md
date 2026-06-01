@@ -145,6 +145,8 @@ Before writing a DOCX, every patch must have an exact Office range:
 - loops need validated table-row or block boundaries.
 - conditionals need a native content-control range plus sidecar condition.
 
+`template compile-office` may apply scalar slot patches only when the dynamic value is isolated in a single safe run. It must skip cross-run values, loops, conditionals, and conflicts until the IR carries a validated exact range.
+
 Custom behavior should default to an OfficeCLI/OOXML patcher:
 
 - Use OOXML patching for content controls, custom XML parts, data binding, deletion, cloning, and deterministic rendering.
