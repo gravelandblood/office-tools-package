@@ -79,7 +79,27 @@ node packages/cli/bin/office-tools.js template compile-office baseline.docx --pl
 node packages/cli/bin/office-tools.js template render-office template.docx --data data.json --out rendered.docx
 ```
 
-`render-office` 会读取 `ot-field:*` 和 `ot-repeat:*` content controls。字段控件会替换其文本内容；重复区控件会克隆模板表格行并填入数组数据，同时更新 custom XML part。
+`render-office` 会读取 `ot-field:*` 和 `ot-repeat:*` content controls。字段控件会替换其文本内容；重复区控件会克隆模板表格行并填入数组数据，同时更新 custom XML part。表格数据支持二维数组，也支持对象数组；对象数组会按表头做中英文别名匹配，例如 `Item/Owner/Status` 或 `序号/股东名称/出资额/持股比例`。
+
+推荐数据包形态：
+
+```json
+{
+  "fields": {
+    "company": { "name": "示例公司" },
+    "report": { "date": "2026-08-20" }
+  },
+  "arrays": {
+    "table001": {
+      "rows": [
+        { "序号": "1", "股东名称": "测试股东A", "出资额": "123.45", "持股比例": "67.89" }
+      ]
+    }
+  }
+}
+```
+
+渲染结果会返回 `controls[]`，其中包含控件类型、数据路径和重复区行数，便于回放评分和日志审计。
 
 低置信或多候选位置不会直接丢弃。`compile-office` 会在 `skipped[].candidates` 中输出候选位置、置信度、命中原因、文本预览和 OOXML range。人或大模型审阅后，可以用 `--accept-candidates` 试编译：
 

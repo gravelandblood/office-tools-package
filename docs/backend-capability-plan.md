@@ -47,6 +47,9 @@ Template note:
   Office-native templates: scalar content controls are replaced from JSON,
   repeating section table rows are cloned from array data, and custom XML is
   updated in the package.
+- Table rendering accepts object arrays and maps fields by header aliases, so
+  legal-style tables can use meaningful keys such as `股东名称`, `出资额`, or
+  `持股比例` instead of positional arrays.
 - Sidecar rules for conditions and complex loops should be applied by a
   deterministic OOXML patcher, then verified with `template compare-format`.
 - Use WPS/Word COM or JSAPI only when real application behavior is required:

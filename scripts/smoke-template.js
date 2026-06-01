@@ -204,14 +204,18 @@ async function main() {
     throw new Error(`Compiled Office-native template lost document structure: ${JSON.stringify(compiledInspected, null, 2)}`);
   }
   await fs.writeFile(officeNativeData, `${JSON.stringify({
-    company: { name: "Rendered Global Holdings Ltd." },
-    report: { date: "2026-08-20" },
-    field: { "003": "Rendered conclusion from Office-native controls." },
-    table001: {
-      rows: [
-        ["Rendered Contract", "Dana", "Open"],
-        ["Rendered Finance", "Evan", "Closed"]
-      ]
+    fields: {
+      company: { name: "Rendered Global Holdings Ltd." },
+      report: { date: "2026-08-20" },
+      field: { "003": "Rendered conclusion from Office-native controls." }
+    },
+    arrays: {
+      table001: {
+        rows: [
+          { item: "Rendered Contract", owner: "Dana", status: "Open" },
+          { item: "Rendered Finance", owner: "Evan", status: "Closed" }
+        ]
+      }
     }
   }, null, 2)}\n`, "utf8");
   const officeRendered = parseJson(await run([
@@ -221,6 +225,9 @@ async function main() {
   ]));
   if (officeRendered.renderedControls < 4) {
     throw new Error(`Office-native render did not render expected controls: ${JSON.stringify(officeRendered, null, 2)}`);
+  }
+  if (!officeRendered.controls.some((control) => control.type === "repeat" && control.rows === 2)) {
+    throw new Error(`Office-native render should report repeat row counts: ${JSON.stringify(officeRendered, null, 2)}`);
   }
   const officeRenderedCompared = parseJson(await run(["template", "compare-format", officeNativeTemplate, officeNativeRendered, "--include-text"]));
   if (!officeRenderedCompared.rightText.includes("Rendered Global Holdings Ltd.")

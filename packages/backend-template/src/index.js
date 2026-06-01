@@ -174,6 +174,49 @@ function getByPath(data, fieldPath) {
   return cursor;
 }
 
+function normalizeKeyName(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/\s+/gu, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function keyAliases(key) {
+  const normalized = normalizeKeyName(key);
+  const aliases = new Set([normalized]);
+  const dictionary = [
+    [["index", "序号", "编号"], ["index", "seq", "no", "number"]],
+    [["item", "事项", "项目", "名称", "股东名称"], ["item", "name", "title", "shareholderName"]],
+    [["owner", "负责人", "经办人", "责任人"], ["owner", "person", "assignee"]],
+    [["status", "状态", "进度"], ["status", "state"]],
+    [["amount", "出资额", "金额", "价款"], ["amount", "value", "capital"]],
+    [["ratio", "比例", "持股比例", "出资比例"], ["ratio", "percent", "percentage"]],
+    [["date", "日期", "时间"], ["date", "time"]]
+  ];
+  for (const [headers, fields] of dictionary) {
+    if (headers.some((header) => normalized.includes(normalizeKeyName(header)))) {
+      fields.forEach((field) => aliases.add(normalizeKeyName(field)));
+    }
+  }
+  return aliases;
+}
+
+function valueForHeader(rowData, header, index) {
+  if (Array.isArray(rowData)) return rowData[index];
+  if (!rowData || typeof rowData !== "object") return index === 0 ? rowData : "";
+  const entries = Object.entries(rowData);
+  const headerAliases = keyAliases(header);
+  for (const [key, value] of entries) {
+    if (headerAliases.has(normalizeKeyName(key))) return value;
+  }
+  const normalizedHeader = normalizeKeyName(header);
+  for (const [key, value] of entries) {
+    const normalizedKey = normalizeKeyName(key);
+    if (normalizedKey.includes(normalizedHeader) || normalizedHeader.includes(normalizedKey)) return value;
+  }
+  return entries[index]?.[1] ?? "";
+}
+
 function setTextInFirstTextNode(xml, value) {
   let replaced = false;
   return xml.replace(TEXT_NODE_RE, (full, attrs) => {
@@ -192,6 +235,18 @@ function clearFollowingTextNodes(xml) {
       return full;
     }
     const nextAttrs = attrs.includes("xml:space=") ? attrs : `${attrs} xml:space="preserve"`;
+    return `<w:t${nextAttrs}></w:t>`;
+  });
+}
+
+function replaceAllTextNodesWithValue(xml, value) {
+  let replaced = false;
+  return xml.replace(TEXT_NODE_RE, (full, attrs) => {
+    const nextAttrs = attrs.includes("xml:space=") ? attrs : `${attrs} xml:space="preserve"`;
+    if (!replaced) {
+      replaced = true;
+      return `<w:t${nextAttrs}>${escapeXml(value === undefined || value === null ? "" : String(value))}</w:t>`;
+    }
     return `<w:t${nextAttrs}></w:t>`;
   });
 }
@@ -254,12 +309,14 @@ function renderFieldContentControl(sdtXml, fieldPath, data) {
   const range = outerSdtContentRange(sdtXml);
   if (!range) return { xml: sdtXml, rendered: false };
   const content = sdtXml.slice(range.contentStart, range.contentEnd);
-  const nextContent = clearFollowingTextNodes(setTextInFirstTextNode(content, value));
+  const nextContent = replaceAllTextNodesWithValue(content, value);
   const nextXml = replaceOuterSdtContent(sdtXml, nextContent);
   if (!nextXml) return { xml: sdtXml, rendered: false };
   return {
     xml: nextXml,
-    rendered: true
+    rendered: true,
+    type: "field",
+    path: fieldPath
   };
 }
 
@@ -276,12 +333,7 @@ function rowCellBlocks(rowXml) {
   return cells;
 }
 
-function renderRowFromData(rowXml, rowData) {
-  const values = Array.isArray(rowData)
-    ? rowData
-    : rowData && typeof rowData === "object"
-      ? Object.values(rowData)
-      : [rowData];
+function renderRowFromData(rowXml, rowData, headers = []) {
   const cells = rowCellBlocks(rowXml);
   if (!cells.length) return rowXml;
   let out = "";
@@ -289,12 +341,20 @@ function renderRowFromData(rowXml, rowData) {
   for (let index = 0; index < cells.length; index += 1) {
     const cell = cells[index];
     out += rowXml.slice(cursor, cell.start);
-    const value = values[index] === undefined ? "" : values[index];
-    out += clearFollowingTextNodes(setTextInFirstTextNode(cell.xml, value));
+    const value = valueForHeader(rowData, headers[index] || String(index), index);
+    out += replaceAllTextNodesWithValue(cell.xml, value);
     cursor = cell.end;
   }
   out += rowXml.slice(cursor);
   return out;
+}
+
+function tableHeadersBeforeRepeat(sdtXml) {
+  const before = sdtXml.slice(0, sdtXml.indexOf("<w:sdt"));
+  const rows = Array.from(before.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/gu));
+  const headerRow = rows[rows.length - 1]?.[0];
+  if (!headerRow) return [];
+  return rowCellBlocks(headerRow).map((cell) => textFromXml(cell.xml));
 }
 
 function renderRepeatContentControl(sdtXml, arrayPath, data) {
@@ -306,12 +366,16 @@ function renderRepeatContentControl(sdtXml, arrayPath, data) {
   const rowMatches = Array.from(content.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/gu));
   if (!rowMatches.length) return { xml: sdtXml, rendered: false };
   const templateRow = rowMatches[0][0];
-  const renderedRows = rows.map((row) => renderRowFromData(templateRow, row)).join("");
+  const headers = tableHeadersBeforeRepeat(sdtXml);
+  const renderedRows = rows.map((row) => renderRowFromData(templateRow, row, headers)).join("");
   const nextXml = replaceOuterSdtContent(sdtXml, renderedRows);
   if (!nextXml) return { xml: sdtXml, rendered: false };
   return {
     xml: nextXml,
-    rendered: true
+    rendered: true,
+    type: "repeat",
+    path: arrayPath,
+    rows: rows.length
   };
 }
 
@@ -331,7 +395,14 @@ function renderOfficeXml(xml, data) {
     }
     if (result?.rendered) {
       nextXml = `${nextXml.slice(0, control.start)}${result.xml}${nextXml.slice(control.end)}`;
-      rendered.push({ tag, start: control.start, end: control.end });
+      rendered.push({
+        tag,
+        type: result.type,
+        path: result.path,
+        rows: result.rows,
+        start: control.start,
+        end: control.end
+      });
     }
   }
   return { xml: nextXml, rendered };
@@ -759,6 +830,21 @@ function buildCustomXmlDataFromPayload(data) {
   }
   visit(data, []);
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<template><data>${Array.from(root.children.entries()).map(([name, node]) => xmlTreeToString(name, node)).join("")}</data></template>`;
+}
+
+function mergePayloadData(payload) {
+  if (payload.data && typeof payload.data === "object") return mergePayloadData(payload.data);
+  const merged = {};
+  if (payload.fields && typeof payload.fields === "object") {
+    Object.assign(merged, payload.fields);
+  }
+  if (payload.arrays && typeof payload.arrays === "object") {
+    Object.assign(merged, payload.arrays);
+  }
+  for (const [key, value] of Object.entries(payload)) {
+    if (!["fields", "arrays"].includes(key)) merged[key] = value;
+  }
+  return Object.keys(merged).length ? merged : payload;
 }
 
 function updateOfficeTemplateCustomXml(zip, data) {
@@ -2739,7 +2825,7 @@ export async function renderOfficeTemplate(templateDocx, options = {}) {
   }
 
   const payload = JSON.parse((await fs.readFile(dataPath, "utf8")).replace(/^\uFEFF/u, ""));
-  const data = payload.fields || payload.data || payload;
+  const data = mergePayloadData(payload);
   const zip = await loadDocx(templateDocx);
   const parts = await readWordParts(zip);
   const renderedControls = [];

@@ -149,7 +149,7 @@ Before writing a DOCX, every patch must have an exact Office range:
 
 Skipped compile targets should carry scored candidates with `kind`, `index`, `confidence`, evidence reasons, text preview, fingerprint, and range. Human or LLM review can feed selected candidates back through `--accept-candidates`; compiled results must mark those as overrides.
 
-Compiled Office-native templates should render through `template render-office`: replace `ot-field:*` content controls, clone `ot-repeat:*` table rows from array data, update custom XML, and then validate with `template compare-format`.
+Compiled Office-native templates should render through `template render-office`: replace `ot-field:*` content controls, clone `ot-repeat:*` table rows from array data, update custom XML, and then validate with `template compare-format`. Table arrays may be arrays of objects; map object keys by table-header aliases before falling back to positional values.
 
 Custom behavior should default to an OfficeCLI/OOXML patcher:
 
