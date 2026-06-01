@@ -6,6 +6,7 @@ import {
   compareFormat,
   inferFormatTemplate,
   inspectFormat,
+  planOfficeTemplate,
   profileDocx,
   renderTemplate
 } from "@office-tools/backend-template";
@@ -43,6 +44,7 @@ Usage:
   office-tools template inspect-format <input.docx> [options]
   office-tools template profile <input.docx> [options]
   office-tools template analyze <input.docx...> [options]
+  office-tools template plan-office <template-ir.json> [options]
   office-tools template infer-format <input.docx> --out-template <template.docx> --out-data <data.json> --out-profile <profile.json>
   office-tools template render <template.docx> --data <data.json> --out <output.docx>
   office-tools template compare-format <left.docx> <right.docx> [options]
@@ -82,6 +84,7 @@ Template options:
   --data <path>                  JSON data for rendering.
   --summary                      Print only profile summary and signals.
   --out-ir <path>                Generated Template Detective IR path.
+  --out-plan <path>              Generated Office-native template patch plan path.
   --include-text                 Include extracted text in compare output.
 
 Raw WPS UIA options:
@@ -534,6 +537,33 @@ function parseTemplateAnalyze(argv) {
   return { inputs, options };
 }
 
+function parseTemplatePlanOffice(argv) {
+  const input = argv[0];
+  if (!input || input.startsWith("--")) {
+    throw new Error("template plan-office requires <template-ir.json>");
+  }
+
+  const options = {};
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--out":
+      case "--output":
+      case "--out-plan":
+        options.outputPath = readOption(argv, i);
+        i += 1;
+        break;
+      case "--summary":
+        options.summary = true;
+        break;
+      default:
+        throw new Error(`Unknown template plan-office option: ${arg}`);
+    }
+  }
+
+  return { input, options };
+}
+
 function parseTemplateRender(argv) {
   const input = argv[0];
   if (!input || input.startsWith("--")) {
@@ -654,6 +684,12 @@ async function main() {
   if (domain === "template" && command === "analyze") {
     const { inputs, options } = parseTemplateAnalyze([subcommand, ...rest]);
     printJson(await analyzeTemplates(inputs, options));
+    return;
+  }
+
+  if (domain === "template" && command === "plan-office") {
+    const { input, options } = parseTemplatePlanOffice([subcommand, ...rest]);
+    printJson(await planOfficeTemplate(input, options));
     return;
   }
 

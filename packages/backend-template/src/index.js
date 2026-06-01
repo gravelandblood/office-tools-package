@@ -44,6 +44,10 @@ export const capabilities = {
     {
       id: "template.analyze",
       description: "Analyze one or more DOCX examples into a Template Detective IR with rule candidates and conflicts."
+    },
+    {
+      id: "template.planOffice",
+      description: "Map Template Detective IR to an Office-native template patch plan using content controls, custom XML, repeating sections, and sidecar gaps."
     }
   ]
 };
@@ -1251,6 +1255,283 @@ async function analyzeDocxInputs(inputDocxPaths) {
   return ir;
 }
 
+function officeCapabilityForRule(rule) {
+  if (rule.kind === "slot") {
+    return {
+      native: "contentControl",
+      binding: "customXmlPart",
+      patchKind: "wrap-range-with-sdt",
+      confidence: Math.min(rule.confidence ?? 0.5, 0.9),
+      rationale: "Scalar dynamic text maps to a Word content control bound to a custom XML field."
+    };
+  }
+  if (rule.kind === "loop") {
+    return {
+      native: "repeatingSectionContentControl",
+      binding: "customXmlPart",
+      patchKind: "wrap-row-or-block-with-repeating-sdt",
+      confidence: Math.min(rule.confidence ?? 0.4, 0.78),
+      rationale: "Repeated rows or block groups should use Word repeating section content controls when the range is structurally stable."
+    };
+  }
+  if (rule.kind === "staticText") {
+    return {
+      native: "plainWordContent",
+      binding: null,
+      patchKind: "preserve-existing-ooxml",
+      confidence: rule.confidence ?? 0.8,
+      rationale: "Static text should be left as native Word content, preserving existing OOXML and styles."
+    };
+  }
+  if (rule.kind === "conditional") {
+    return {
+      native: "contentControlGroup",
+      binding: "sidecarCondition",
+      patchKind: "annotate-sdt-with-sidecar-condition",
+      confidence: rule.confidence ?? 0.45,
+      rationale: "Word has no first-class conditional template primitive; use a native content control as the range marker and a sidecar expression for rendering."
+    };
+  }
+  return {
+    native: "sidecarRule",
+    binding: "sidecar",
+    patchKind: "manual-or-renderer-rule",
+    confidence: rule.confidence ?? 0.3,
+    rationale: "No direct Office-native mapping is known for this rule kind."
+  };
+}
+
+function officeFieldPath(rule, index) {
+  if (rule.expression && /^[A-Za-z_][A-Za-z0-9_.[\]-]*$/u.test(rule.expression)) {
+    return rule.expression;
+  }
+  return `field.${String(index).padStart(3, "0")}`;
+}
+
+function contentControlTag(prefix, fieldPath) {
+  return `${prefix}:${fieldPath}`.replace(/\s+/gu, "_");
+}
+
+function compileReadinessForRule(rule) {
+  if (rule.kind === "slot") {
+    const requires = rule.label ? "value-run-range" : "paragraph-or-run-range";
+    return {
+      status: "needs-exact-range",
+      requiredTarget: requires,
+      deterministicBackend: "officecli-ooxml-patcher",
+      reason: rule.label
+        ? "The current IR identifies the label/value paragraph, but a native content control should wrap only the dynamic value after the label."
+        : "The current IR identifies the paragraph block; direct DOCX patching needs exact run/text-node boundaries before wrapping content."
+    };
+  }
+  if (rule.kind === "loop") {
+    return {
+      status: "needs-exact-range",
+      requiredTarget: "table-row-or-block-range",
+      deterministicBackend: "officecli-ooxml-patcher",
+      reason: "Repeating section content controls must wrap whole paragraphs or table rows with validated boundaries."
+    };
+  }
+  if (rule.kind === "conditional") {
+    return {
+      status: "needs-rule-and-range",
+      requiredTarget: "paragraph-or-block-range",
+      deterministicBackend: "officecli-ooxml-patcher-with-sidecar",
+      reason: "Word has no native conditional expression; the native control can mark the range, while sidecar metadata decides keep/delete during rendering."
+    };
+  }
+  return {
+    status: "not-patchable",
+    requiredTarget: null,
+    deterministicBackend: "manual-review",
+    reason: "This rule kind is not mapped to an automatic Office-native patch."
+  };
+}
+
+function buildOfficePatch(rule, index) {
+  const capability = officeCapabilityForRule(rule);
+  const fieldPath = officeFieldPath(rule, index);
+  const base = {
+    id: `patch.${String(index).padStart(4, "0")}`,
+    ruleId: rule.id,
+    ruleKind: rule.kind,
+    target: rule.target,
+    evidence: rule.evidence,
+    confidence: capability.confidence,
+    officeNative: capability.native,
+    binding: capability.binding,
+    patchKind: capability.patchKind,
+    compileReadiness: compileReadinessForRule(rule),
+    rationale: capability.rationale
+  };
+
+  if (rule.kind === "slot") {
+    return {
+      ...base,
+      contentControl: {
+        type: "plainText",
+        title: fieldPath,
+        tag: contentControlTag("ot-field", fieldPath),
+        lockContentControl: false,
+        lockContents: false
+      },
+      customXmlBinding: {
+        storeItemId: "{office-tools-template-data}",
+        xpath: `/template/data/${fieldPath.replace(/[.[\]-]+/gu, "/")}`,
+        prefixMappings: ""
+      },
+      sidecar: null
+    };
+  }
+
+  if (rule.kind === "loop") {
+    return {
+      ...base,
+      contentControl: {
+        type: "repeatingSection",
+        title: fieldPath,
+        tag: contentControlTag("ot-repeat", fieldPath),
+        lockContentControl: false,
+        lockContents: false
+      },
+      customXmlBinding: {
+        storeItemId: "{office-tools-template-data}",
+        xpath: `/template/data/${fieldPath.replace(/[.[\]-]+/gu, "/")}`,
+        prefixMappings: ""
+      },
+      sidecar: {
+        rendererRequired: true,
+        reason: "Repeating section creation and row cloning require range-safe compilation before direct DOCX patching."
+      }
+    };
+  }
+
+  if (rule.kind === "conditional") {
+    return {
+      ...base,
+      contentControl: {
+        type: "richText",
+        title: fieldPath,
+        tag: contentControlTag("ot-condition", fieldPath),
+        lockContentControl: false,
+        lockContents: false
+      },
+      customXmlBinding: null,
+      sidecar: {
+        condition: rule.expression || null,
+        rendererRequired: true
+      }
+    };
+  }
+
+  return {
+    ...base,
+    contentControl: null,
+    customXmlBinding: null,
+    sidecar: { rendererRequired: true }
+  };
+}
+
+function buildOfficePreserveItem(rule, index) {
+  const capability = officeCapabilityForRule(rule);
+  return {
+    id: `preserve.${String(index).padStart(4, "0")}`,
+    ruleId: rule.id,
+    ruleKind: rule.kind,
+    target: rule.target,
+    value: rule.value,
+    evidence: rule.evidence,
+    confidence: capability.confidence,
+    officeNative: capability.native,
+    patchKind: capability.patchKind,
+    rationale: capability.rationale
+  };
+}
+
+function conflictToOfficeGap(conflict, index) {
+  return {
+    id: `gap.${String(index).padStart(4, "0")}`,
+    conflictId: conflict.id,
+    type: conflict.type,
+    severity: conflict.severity,
+    classification: conflict.classification,
+    evidence: conflict.evidence,
+    recommendedAction: conflict.recommendedAction,
+    officeNativeFallback: conflict.type === "optionalBlockAmbiguity"
+      ? "contentControlGroup + sidecar condition"
+      : "preserve existing OOXML until conflict is classified",
+    rationale: "Office-native templates require an explicit range and stable semantics; unresolved conflicts stay out of automatic patching."
+  };
+}
+
+function buildOfficeTemplatePlan(ir) {
+  const rules = Array.isArray(ir.rules) ? ir.rules : [];
+  const conflicts = Array.isArray(ir.conflicts) ? ir.conflicts : [];
+  const patchableRules = rules.filter((rule) => ["slot", "loop", "conditional"].includes(rule.kind));
+  const preserveRules = rules.filter((rule) => rule.kind === "staticText");
+  const patches = patchableRules
+    .map((rule, index) => buildOfficePatch(rule, index + 1));
+  const preserves = preserveRules
+    .map((rule, index) => buildOfficePreserveItem(rule, index + 1));
+  const gaps = conflicts.map((conflict, index) => conflictToOfficeGap(conflict, index + 1));
+  const officeNativePatchCount = patches.filter((patch) => patch.officeNative !== "sidecarRule").length;
+  const sidecarRendererRuleCount = patches.filter((patch) => patch.sidecar?.rendererRequired).length;
+  const sidecarGapCount = gaps.length;
+  const sidecarTotalCount = sidecarRendererRuleCount + sidecarGapCount;
+
+  return {
+    version: 1,
+    kind: "office-native-template-plan",
+    generatedAt: new Date().toISOString(),
+    sourceIr: {
+      mode: ir.mode,
+      sources: ir.sources || [],
+      summary: ir.summary || null,
+      alignment: ir.alignment || null
+    },
+    principles: [
+      "Preserve existing DOCX OOXML, styles, numbering, sections, headers, footers, and table formatting unless a patch explicitly wraps a range.",
+      "Prefer Word content controls and custom XML bindings for scalar slots.",
+      "Prefer repeating section content controls for stable row or block loops.",
+      "Represent conditions and unresolved ambiguity as sidecar metadata attached to native content-control ranges.",
+      "Never rewrite formatting rules into a private styling system when Word styles or direct OOXML can be preserved."
+    ],
+    nativeTargets: {
+      scalarSlots: "w:sdt plain-text/rich-text content controls with w:tag and optional custom XML binding",
+      loops: "Word repeating section content controls where a stable table row or block range is known",
+      staticContent: "Unmodified WordprocessingML",
+      styles: "Existing styles.xml, numbering.xml, table properties, paragraph/run properties",
+      gaps: "Sidecar JSON metadata plus conflict report"
+    },
+    backendDecision: {
+      compile: "officecli-ooxml-patcher",
+      render: "officecli-ooxml-patcher + Office-native content controls/custom XML where possible",
+      verify: "template.compare-format first; COM/JSAPI only for live Office/WPS layout, field refresh, save-as, export, or active document workflows",
+      notForTemplateRendering: ["wps-uia"],
+      rationale: "Template compilation and rendering are deterministic package edits, not visible desktop UI automation. UIA remains reserved for product UI capabilities such as PDF conversion."
+    },
+    patches,
+    preserves,
+    gaps,
+    summary: {
+      patches: patches.length,
+      actualPatchCount: patches.length,
+      officeNativePatchCount,
+      nativePatchCount: officeNativePatchCount,
+      sidecarRendererRuleCount,
+      sidecarGapCount,
+      sidecarTotalCount,
+      sidecarPatchCount: sidecarTotalCount,
+      gaps: gaps.length,
+      slotPatches: patches.filter((patch) => patch.ruleKind === "slot").length,
+      loopPatches: patches.filter((patch) => patch.ruleKind === "loop").length,
+      conditionalPatches: patches.filter((patch) => patch.ruleKind === "conditional").length,
+      staticPreserveItems: preserves.length,
+      staticPreservePatches: preserves.length
+    }
+  };
+}
+
 function collectParagraphs(node, result = []) {
   if (!node || typeof node !== "object") return result;
   if (Array.isArray(node)) {
@@ -1513,6 +1794,42 @@ export async function analyzeTemplates(inputDocxPaths, options = {}) {
       alignment: ir.alignment,
       conflicts: ir.conflicts.slice(0, 20),
       profileSignals: ir.profileSignals.slice(0, 20)
+    };
+  }
+
+  return result;
+}
+
+export async function planOfficeTemplate(irPath, options = {}) {
+  if (!irPath) {
+    throw new Error("template plan-office requires <template-ir.json>");
+  }
+  const ir = JSON.parse(await fs.readFile(irPath, "utf8"));
+  const plan = buildOfficeTemplatePlan(ir);
+  const result = {
+    ok: true,
+    command: "template.planOffice",
+    input: path.resolve(irPath),
+    plan
+  };
+
+  const outputPath = options.outputPath || options.out;
+  if (outputPath) {
+    await fs.mkdir(path.dirname(path.resolve(outputPath)), { recursive: true });
+    await fs.writeFile(outputPath, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+    result.output = path.resolve(outputPath);
+  }
+
+  if (options.summary) {
+    result.plan = {
+      version: plan.version,
+      kind: plan.kind,
+      generatedAt: plan.generatedAt,
+      sourceIr: plan.sourceIr,
+      nativeTargets: plan.nativeTargets,
+      backendDecision: plan.backendDecision,
+      summary: plan.summary,
+      gaps: plan.gaps.slice(0, 20)
     };
   }
 

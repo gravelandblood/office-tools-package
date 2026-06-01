@@ -30,6 +30,19 @@ References checked while drafting this plan:
 OfficeCLI should be the default file backend for `.docx`, `.xlsx`, and `.pptx`
 when the job can be expressed as OOXML operations.
 
+Template note:
+
+- Template Detective custom rendering should default to OfficeCLI-style OOXML
+  patching, not COM/JSAPI/UIA.
+- Office-native template compilation means wrapping existing DOCX ranges with
+  content controls, adding custom XML parts/bindings, and preserving existing
+  styles/numbering/table properties.
+- Sidecar rules for conditions and complex loops should be applied by a
+  deterministic OOXML patcher, then verified with `template compare-format`.
+- Use WPS/Word COM or JSAPI only when real application behavior is required:
+  field updates, pagination-sensitive output, active document interactions, or
+  export/render verification.
+
 Planned command groups:
 
 | Area | Capabilities | Package command shape |

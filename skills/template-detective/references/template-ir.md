@@ -125,3 +125,28 @@ Validation records replay results:
 - `failures`
 
 Validation failures should feed back into rules or conflicts; they should not be ignored.
+
+## Office-Native Compile Target
+
+Treat the IR as a detection and planning layer, not the final template runtime. Prefer compiling accepted rules back into Office-native structures:
+
+- `slot` -> Word content control (`w:sdt`) with `w:tag`, `w:alias`, and optional custom XML binding.
+- `loop` -> repeating section content control when a stable table row or block range is known.
+- `staticText` -> unchanged WordprocessingML.
+- `conditional` -> native content-control range plus sidecar condition.
+- `conflict` -> sidecar gap/report only; do not patch unresolved conflicts.
+
+Static rules should be emitted as preserve items, not actual patches. Actual patches must only target structures that need wrapping or metadata.
+
+Before writing a DOCX, every patch must have an exact Office range:
+
+- label/value slots need the value run or text-node range, not the full label paragraph.
+- paragraph slots need a whole-paragraph or exact run range.
+- loops need validated table-row or block boundaries.
+- conditionals need a native content-control range plus sidecar condition.
+
+Custom behavior should default to an OfficeCLI/OOXML patcher:
+
+- Use OOXML patching for content controls, custom XML parts, data binding, deletion, cloning, and deterministic rendering.
+- Use COM/JSAPI only for operations that require a live Office/WPS application, such as field updates, active selection, pagination-sensitive verification, save-as/export, or user-facing add-in flows.
+- Do not use UIA for template rendering; reserve UIA for product UI features such as PDF conversion.

@@ -130,6 +130,7 @@ async function main() {
   const detectiveProfile = path.join(tempDir, "detective-profile.json");
   const detectiveIr = path.join(tempDir, "detective-ir.json");
   const detectiveIrMulti = path.join(tempDir, "detective-ir-multi.json");
+  const officePlan = path.join(tempDir, "office-plan.json");
   const rendered = path.join(tempDir, "rendered.docx");
 
   await writeSampleDocx(sample);
@@ -171,6 +172,18 @@ async function main() {
   ]));
   if (multiAnalyzed.ir.summary.fields < 2 || multiAnalyzed.ir.summary.arrays < 1 || multiAnalyzed.ir.alignment.matchedGroups < 4) {
     throw new Error(`Multi-sample analysis did not infer expected fields and loops: ${JSON.stringify(multiAnalyzed, null, 2)}`);
+  }
+  const planned = parseJson(await run(["template", "plan-office", detectiveIrMulti, "--out-plan", officePlan, "--summary"]));
+  if (planned.plan.summary.slotPatches < 2 || planned.plan.summary.loopPatches < 1) {
+    throw new Error(`Office plan did not map expected slots and loops: ${JSON.stringify(planned, null, 2)}`);
+  }
+  const fullPlan = JSON.parse(await fs.readFile(officePlan, "utf8"));
+  if (!fullPlan.patches?.some((patch) => patch.officeNative === "contentControl")
+    || !fullPlan.patches?.some((patch) => patch.officeNative === "repeatingSectionContentControl")) {
+    throw new Error("Office plan did not include content controls and repeating section content controls.");
+  }
+  if (!fullPlan.preserves?.length || fullPlan.summary.patches !== fullPlan.summary.actualPatchCount) {
+    throw new Error("Office plan should separate actual patches from static preserve items.");
   }
 
   const inferred = parseJson(await run([
