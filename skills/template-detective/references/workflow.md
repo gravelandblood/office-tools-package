@@ -44,7 +44,7 @@ Normalize profiles into the Template IR, or inspect the IR produced by `template
 
 Do not erase inconsistencies. If two visually similar paragraphs use different direct formatting, record both variants and defer the decision to rule induction.
 
-Current analyzer limitation: rough multi-sample alignment uses document part and block index. For structurally different report types, expect many `sameRoleDifferentFormat`, `tableShapeAmbiguity`, and `optionalBlockAmbiguity` conflicts. Use these conflicts to drive anchor-based alignment rather than accepting the rough pairing.
+Current analyzer behavior: multi-sample alignment uses anchor similarity from labels, table headers, text, formatting, and nearby position. Inspect `ir.alignment` before trusting slot/loop rules. A high unmatched count means the samples may be different report types or need better section-level alignment.
 
 ## Phase 3: Rule Induction
 

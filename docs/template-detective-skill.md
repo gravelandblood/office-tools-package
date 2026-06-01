@@ -52,6 +52,7 @@ node packages/cli/bin/office-tools.js template analyze C:\path\a.docx C:\path\b.
 - `rules`：静态文本、slot、loop 的确定性候选规则。
 - `conflicts`：可选块、同位置格式差异、表格结构差异等未解决冲突。
 - `profileSignals`：单文档内部的直接格式漂移、表格行格式变体等信号。
+- `alignment`：多样本锚点对齐质量，包括匹配组、未匹配组、平均相似度和低置信组数量。
 
 当前版本的 `analyze` 是可运行的启发式 IR 生成器，不是最终模板编译器。它的价值在于把后续 LLM 需要看的材料压缩成可验证、可追溯的结构化证据。
 
@@ -69,19 +70,20 @@ node packages/cli/bin/office-tools.js template analyze C:\path\a.docx C:\path\b.
 
 - structureNodes：677
 - formatAtoms：134
-- rules：340
-- fields：304
-- arrays：10
-- conflicts：355
+- rules：554
+- fields：5
+- arrays：9
+- conflicts：590
 - profileSignals：25
+- alignment：anchor-similarity，590 组，87 个跨样本匹配组，503 个未匹配组，平均匹配分 0.854
 
-双样本结果说明当前按位置对齐的启发式太粗，会把不同报告类型中的段落和表格硬配在一起，所以冲突数量很高。这不是失败，而是下一阶段结构对齐的输入。
+双样本结果说明锚点对齐已经避免了把大量不同段落误判成动态字段：字段候选从早期按位置对齐的 304 个降到 5 个。冲突数量变高，是因为无法可靠对齐的块会被显式标成 optional/ambiguity，而不是被静默当成 slot。
 
 ## 后续工程拆分
 
 ### P1：锚点式多样本对齐
 
-当前 `analyze` 先按 part + index 做粗对齐。下一步需要加入：
+当前 `analyze` 已加入标题/表头/文本/格式/位置的锚点相似度。下一步需要继续增强：
 
 - 标题相似度。
 - 表格表头相似度。

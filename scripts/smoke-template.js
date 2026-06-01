@@ -169,7 +169,7 @@ async function main() {
     "--out-ir", detectiveIrMulti,
     "--summary"
   ]));
-  if (multiAnalyzed.ir.summary.fields < 2 || multiAnalyzed.ir.summary.arrays < 1) {
+  if (multiAnalyzed.ir.summary.fields < 2 || multiAnalyzed.ir.summary.arrays < 1 || multiAnalyzed.ir.alignment.matchedGroups < 4) {
     throw new Error(`Multi-sample analysis did not infer expected fields and loops: ${JSON.stringify(multiAnalyzed, null, 2)}`);
   }
 

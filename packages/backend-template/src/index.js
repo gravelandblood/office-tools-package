@@ -537,19 +537,13 @@ function addFormatAtom(atomMap, kind, fingerprint, properties, evidence) {
 }
 
 function blockSignature(node) {
-  if (node.kind === "paragraph") {
-    return `p:${node.part}:${node.index}`;
-  }
-  if (node.kind === "table") {
-    return `tbl:${node.part}:${node.index}`;
-  }
   return `${node.kind}:${node.part || ""}:${node.index ?? ""}`;
 }
 
 function textClass(text) {
   const value = String(text || "").trim();
   if (!value) return "empty";
-  if (/^\d{4}[-/.年]\d{1,2}([-/.月]\d{1,2}日?)?$/u.test(value)) return "date";
+  if (/^\d{4}[-/.\u5e74]\d{1,2}([-/.\u6708]\d{1,2}\u65e5?)?$/u.test(value)) return "date";
   if (/^[\d,]+(\.\d+)?%?$/u.test(value)) return "number";
   if (valueHasLabel(value)) return "labelValue";
   if (value.length <= 12) return "shortText";
@@ -557,16 +551,140 @@ function textClass(text) {
 }
 
 function valueHasLabel(value) {
-  return /[:：]/u.test(value) && value.replace(/[:：].*$/u, "").trim().length <= 20;
+  return /[:\uFF1A]/u.test(value) && value.replace(/[:\uFF1A].*$/u, "").trim().length <= 20;
 }
 
 function splitLabelValue(value) {
-  const match = String(value || "").match(/^(.{1,30}?)[：:]\s*(.+)$/u);
+  const match = String(value || "").match(/^(.{1,30}?)[\uFF1A:]\s*(.+)$/u);
   if (!match) return null;
   return {
     label: match[1].trim(),
     value: match[2].trim()
   };
+}
+
+function normalizeAnchorText(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/\s+/gu, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function textBigrams(text) {
+  const normalized = normalizeAnchorText(text);
+  if (!normalized) return new Set();
+  if (normalized.length === 1) return new Set([normalized]);
+  const grams = new Set();
+  for (let index = 0; index < normalized.length - 1; index += 1) {
+    grams.add(normalized.slice(index, index + 2));
+  }
+  return grams;
+}
+
+function jaccard(left, right) {
+  if (!left.size && !right.size) return 0;
+  let intersection = 0;
+  for (const item of left) {
+    if (right.has(item)) intersection += 1;
+  }
+  const union = new Set([...left, ...right]).size;
+  return union ? intersection / union : 0;
+}
+
+function textSimilarity(left, right) {
+  const leftText = normalizeAnchorText(left);
+  const rightText = normalizeAnchorText(right);
+  if (!leftText || !rightText) return 0;
+  if (leftText === rightText) return 1;
+  return jaccard(textBigrams(leftText), textBigrams(rightText));
+}
+
+function tableHeaderText(table) {
+  const firstRow = table.rows[0];
+  if (!firstRow) return "";
+  return firstRow.cells.map((cell) => cell.text.trim()).join("|");
+}
+
+function indexProximity(left, right) {
+  const distance = Math.abs((left.index ?? 0) - (right.index ?? 0));
+  return Math.max(0, 1 - distance / 20);
+}
+
+function blockAnchorKey(block) {
+  if (block.kind === "table") {
+    const header = normalizeAnchorText(block.headerText);
+    return header ? `table:${block.part}:${header}` : `table:${block.part}:${block.columnCount}`;
+  }
+  const labelValue = splitLabelValue(block.text);
+  if (labelValue) return `paragraph:${block.part}:label:${normalizeAnchorText(labelValue.label)}`;
+  const normalized = normalizeAnchorText(block.text);
+  if (normalized && normalized.length <= 40) return `paragraph:${block.part}:text:${normalized}`;
+  if (block.styleId) return `paragraph:${block.part}:style:${block.styleId}`;
+  return `paragraph:${block.part}:index:${block.index}`;
+}
+
+function blockSimilarity(left, right) {
+  if (left.kind !== right.kind) return { score: 0, reason: "kind-mismatch" };
+  let score = left.part === right.part ? 0.08 : 0;
+  const reasons = [];
+
+  if (left.kind === "table") {
+    const headerScore = textSimilarity(left.headerText, right.headerText);
+    if (headerScore > 0) {
+      score += headerScore * 0.58;
+      reasons.push(`header:${headerScore.toFixed(2)}`);
+    }
+    if (left.columnCount && left.columnCount === right.columnCount) {
+      score += 0.16;
+      reasons.push("columns");
+    }
+    if (left.formatFingerprint === right.formatFingerprint) {
+      score += 0.12;
+      reasons.push("format");
+    }
+    score += indexProximity(left, right) * 0.08;
+    if (Math.abs((left.rowCount || 0) - (right.rowCount || 0)) <= 1) {
+      score += 0.06;
+      reasons.push("row-count");
+    }
+    return { score: Math.min(score, 1), reason: reasons.join(",") || "weak-table" };
+  }
+
+  const leftLabel = splitLabelValue(left.text);
+  const rightLabel = splitLabelValue(right.text);
+  if (leftLabel && rightLabel) {
+    const labelScore = textSimilarity(leftLabel.label, rightLabel.label);
+    score += labelScore * 0.62;
+    if (labelScore > 0) reasons.push(`label:${labelScore.toFixed(2)}`);
+  } else {
+    const bodyScore = textSimilarity(left.text, right.text);
+    score += bodyScore * 0.42;
+    if (bodyScore > 0) reasons.push(`text:${bodyScore.toFixed(2)}`);
+  }
+  if (left.styleId && left.styleId === right.styleId) {
+    score += 0.14;
+    reasons.push("style");
+  }
+  if (left.formatFingerprint === right.formatFingerprint) {
+    score += 0.14;
+    reasons.push("format");
+  }
+  if (inferRoleCandidates(left).some((role) => inferRoleCandidates(right).includes(role))) {
+    score += 0.08;
+    reasons.push("role");
+  }
+  score += indexProximity(left, right) * 0.08;
+
+  return { score: Math.min(score, 1), reason: reasons.join(",") || "weak-paragraph" };
+}
+
+function alignmentThreshold(block) {
+  if (block.kind === "table") return 0.48;
+  if (splitLabelValue(block.text)) return 0.5;
+  const normalized = normalizeAnchorText(block.text);
+  if (!normalized) return 0.72;
+  if (normalized.length <= 20) return 0.56;
+  return 0.62;
 }
 
 function collectDocumentBlocks(profile, sourceId) {
@@ -585,6 +703,7 @@ function collectDocumentBlocks(profile, sourceId) {
         formatFingerprint: paragraph.paragraphPropertiesFingerprint,
         runFormatFingerprints: paragraph.runs.map((run) => run.formatFingerprint),
         styleId: paragraph.styleId,
+        anchorKey: null,
         evidence: makeEvidence(sourceId, {
           part: part.name,
           paragraphIndex: paragraph.index,
@@ -604,10 +723,12 @@ function collectDocumentBlocks(profile, sourceId) {
         index: table.index,
         text: table.rows.map((row) => row.text).join("\n"),
         textPreview: table.rows.slice(0, 3).map((row) => row.text).join(" | ").slice(0, 120),
+        headerText: tableHeaderText(table),
         structureFingerprint: table.formatFingerprint,
         formatFingerprint: table.tablePropertiesFingerprint,
         rowCount: table.rowCount,
         columnCount: table.columnCount,
+        anchorKey: null,
         evidence: makeEvidence(sourceId, {
           part: part.name,
           tableIndex: table.index,
@@ -622,7 +743,10 @@ function collectDocumentBlocks(profile, sourceId) {
   return blocks.sort((left, right) => {
     if (left.part !== right.part) return left.part.localeCompare(right.part);
     return left.index - right.index;
-  });
+  }).map((block) => ({
+    ...block,
+    anchorKey: blockAnchorKey(block)
+  }));
 }
 
 function buildProfileSource(inputDocx, profile, index) {
@@ -731,7 +855,7 @@ function inferRoleCandidates(block) {
   if (!text) return ["empty"];
   const candidates = [];
   if (valueHasLabel(text)) candidates.push("labelValue");
-  if (/^[一二三四五六七八九十]+[、.．]/u.test(text) || /^\d+[.．、]/u.test(text)) candidates.push("numberedHeading");
+  if (/^[\u4E00\u4E8C\u4E09\u56DB\u4E94\u516D\u4E03\u516B\u4E5D\u5341]+[\u3001.．]/u.test(text) || /^\d+[.．、]/u.test(text)) candidates.push("numberedHeading");
   if (text.length <= 30 && block.original.runs.some((run) => run.rPr?.["w:b"] !== undefined)) candidates.push("heading");
   if (text.length > 80) candidates.push("body");
   if (!candidates.length) candidates.push(textClass(text));
@@ -739,32 +863,128 @@ function inferRoleCandidates(block) {
 }
 
 function groupBlocksForRules(sources) {
-  const byPosition = new Map();
-  for (const source of sources) {
-    for (const block of collectDocumentBlocks(source.profile, source.id)) {
-      const key = blockSignature(block);
-      if (!byPosition.has(key)) byPosition.set(key, []);
-      byPosition.get(key).push(block);
+  if (sources.length <= 1) {
+    const byPosition = new Map();
+    for (const source of sources) {
+      for (const block of collectDocumentBlocks(source.profile, source.id)) {
+        const key = blockSignature(block);
+        if (!byPosition.has(key)) {
+          byPosition.set(key, {
+            signature: key,
+            anchorKey: block.anchorKey,
+            blocks: [],
+            alignment: { strategy: "single-source", score: 1, reason: "single-source", pairs: [] }
+          });
+        }
+        byPosition.get(key).blocks.push(block);
+      }
     }
+    return Array.from(byPosition.values());
   }
-  return byPosition;
+
+  return alignBlocksAcrossSources(sources);
 }
 
-function inferRulesAndConflicts(sources) {
+function alignBlocksAcrossSources(sources) {
+  const sourceEntries = sources.map((source) => ({
+    source,
+    blocks: collectDocumentBlocks(source.profile, source.id)
+  }));
+  const baseline = sourceEntries[0];
+  const remainingBySource = new Map(sourceEntries.slice(1).map((entry) => [entry.source.id, new Set(entry.blocks)]));
+  const groups = [];
+
+  for (const baseBlock of baseline.blocks) {
+    const group = {
+      signature: `align:${String(groups.length + 1).padStart(4, "0")}`,
+      anchorKey: baseBlock.anchorKey,
+      blocks: [baseBlock],
+      alignment: {
+        strategy: "anchor-similarity",
+        score: 1,
+        reason: "baseline",
+        pairs: []
+      }
+    };
+
+    for (const entry of sourceEntries.slice(1)) {
+      const remaining = remainingBySource.get(entry.source.id);
+      let best = null;
+      for (const candidate of remaining) {
+        if (candidate.kind !== baseBlock.kind) continue;
+        const similarity = blockSimilarity(baseBlock, candidate);
+        const sameAnchor = candidate.anchorKey === baseBlock.anchorKey;
+        const score = sameAnchor ? Math.min(1, similarity.score + 0.25) : similarity.score;
+        if (!best || score > best.score) {
+          best = {
+            block: candidate,
+            score,
+            reason: `${sameAnchor ? "anchor," : ""}${similarity.reason}`
+          };
+        }
+      }
+
+      const threshold = alignmentThreshold(baseBlock);
+      if (best && best.score >= threshold) {
+        remaining.delete(best.block);
+        group.blocks.push(best.block);
+        group.alignment.pairs.push({
+          sourceId: entry.source.id,
+          score: Number(best.score.toFixed(3)),
+          threshold,
+          reason: best.reason
+        });
+      }
+    }
+
+    if (group.alignment.pairs.length) {
+      const total = group.alignment.pairs.reduce((sum, pair) => sum + pair.score, 0);
+      group.alignment.score = Number((total / group.alignment.pairs.length).toFixed(3));
+      group.alignment.reason = group.alignment.pairs.map((pair) => `${pair.sourceId}:${pair.reason}`).join("; ");
+    } else {
+      group.alignment.score = 0;
+      group.alignment.reason = "no-match";
+    }
+    groups.push(group);
+  }
+
+  for (const entry of sourceEntries.slice(1)) {
+    for (const block of remainingBySource.get(entry.source.id)) {
+      groups.push({
+        signature: `align:${String(groups.length + 1).padStart(4, "0")}`,
+        anchorKey: block.anchorKey,
+        blocks: [block],
+        alignment: {
+          strategy: "unmatched",
+          score: 0,
+          reason: "no-anchor-match",
+          pairs: []
+        }
+      });
+    }
+  }
+
+  return groups;
+}
+
+function inferRulesAndConflicts(sources, alignedGroups = null) {
   const rules = [];
   const conflicts = [];
   const dataFields = {};
   const arrays = {};
-  const groups = groupBlocksForRules(sources);
+  const groups = alignedGroups || groupBlocksForRules(sources);
   let fieldIndex = 1;
   let arrayIndex = 1;
 
-  for (const [signature, blocks] of groups) {
+  for (const group of groups) {
+    const { signature, blocks, alignment } = group;
     const sourceCount = new Set(blocks.map((block) => block.sourceId)).size;
     const texts = new Set(blocks.map((block) => block.text));
     const formats = new Set(blocks.map((block) => block.formatFingerprint));
     const first = blocks[0];
     const evidences = blocks.map((block) => block.evidence);
+    const alignedAllSources = sourceCount === sources.length;
+    const trustedAlignment = sources.length <= 1 || (alignedAllSources && alignment.score >= alignmentThreshold(first));
 
     if (sourceCount < sources.length) {
       conflicts.push({
@@ -775,6 +995,8 @@ function inferRulesAndConflicts(sources) {
         evidence: evidences,
         recommendedAction: "Confirm whether this block is optional or missing because samples are not structurally aligned.",
         signature,
+        anchorKey: group.anchorKey,
+        alignment,
         presentIn: sourceCount,
         expectedSources: sources.length
       });
@@ -786,7 +1008,7 @@ function inferRulesAndConflicts(sources) {
         && new Set(labelValue.map((item) => item.label)).size === 1;
       const valueSet = new Set(labelValue.filter(Boolean).map((item) => item.value));
 
-      if (hasConsistentLabel && valueSet.size > 1) {
+      if (trustedAlignment && hasConsistentLabel && valueSet.size > 1) {
         const fieldName = semanticFieldName(labelValue[0].label, fieldIndex);
         fieldIndex += 1;
         dataFields[fieldName] = {
@@ -804,7 +1026,8 @@ function inferRulesAndConflicts(sources) {
           evidence: evidences,
           alternatives: [{ kind: "staticText", reason: "Could be fixed if samples refer to different reports rather than one template." }],
           validationStatus: "unverified",
-          label: labelValue[0].label
+          label: labelValue[0].label,
+          alignment
         });
       } else if (texts.size === 1 && first.text.trim()) {
         rules.push({
@@ -815,9 +1038,10 @@ function inferRulesAndConflicts(sources) {
           confidence: sourceCount === sources.length ? 0.86 : 0.55,
           evidence: evidences,
           alternatives: [],
-          validationStatus: "unverified"
+          validationStatus: "unverified",
+          alignment
         });
-      } else if (texts.size > 1 && sourceCount > 1) {
+      } else if (trustedAlignment && texts.size > 1 && sourceCount > 1) {
         const fieldName = `field.${String(fieldIndex).padStart(3, "0")}`;
         fieldIndex += 1;
         dataFields[fieldName] = {
@@ -834,14 +1058,27 @@ function inferRulesAndConflicts(sources) {
           confidence: 0.48,
           evidence: evidences,
           alternatives: [{ kind: "conditional", reason: "Paragraph may represent different optional content rather than one scalar field." }],
-          validationStatus: "unverified"
+          validationStatus: "unverified",
+          alignment
+        });
+      } else if (texts.size > 1 && sourceCount > 1) {
+        conflicts.push({
+          id: `conflict.${String(conflicts.length + 1).padStart(4, "0")}`,
+          type: "optionalBlockAmbiguity",
+          severity: "medium",
+          classification: "unresolvedConflict",
+          evidence: evidences,
+          recommendedAction: "Text differs but alignment confidence is too low to infer a scalar slot.",
+          signature,
+          anchorKey: group.anchorKey,
+          alignment
         });
       }
     }
 
     if (first.kind === "table") {
       const rowCounts = new Set(blocks.map((block) => block.rowCount));
-      if (rowCounts.size > 1 || first.rowCount > 2) {
+      if ((trustedAlignment && rowCounts.size > 1) || (sourceCount === 1 && first.rowCount > 2)) {
         const arrayName = `table${String(arrayIndex).padStart(3, "0")}.rows`;
         arrayIndex += 1;
         arrays[arrayName] = {
@@ -862,7 +1099,20 @@ function inferRulesAndConflicts(sources) {
           confidence: rowCounts.size > 1 ? 0.68 : 0.42,
           evidence: evidences,
           alternatives: [{ kind: "staticTable", reason: "Repeated rows may be fixed report layout if row count does not change across samples." }],
-          validationStatus: "unverified"
+          validationStatus: "unverified",
+          alignment
+        });
+      } else if (rowCounts.size > 1 && !trustedAlignment) {
+        conflicts.push({
+          id: `conflict.${String(conflicts.length + 1).padStart(4, "0")}`,
+          type: "tableShapeAmbiguity",
+          severity: "medium",
+          classification: "unresolvedConflict",
+          evidence: evidences,
+          recommendedAction: "Table row counts differ but table headers/anchors are not similar enough to infer a loop.",
+          signature,
+          anchorKey: group.anchorKey,
+          alignment
         });
       }
     }
@@ -876,6 +1126,8 @@ function inferRulesAndConflicts(sources) {
         evidence: evidences,
         recommendedAction: "Review whether the differing format is a condition, a sample anomaly, or direct-format drift.",
         signature,
+        anchorKey: group.anchorKey,
+        alignment,
         formatVariantCount: formats.size
       });
     }
@@ -889,11 +1141,11 @@ function semanticFieldName(label, fallbackIndex) {
     .replace(/\s+/gu, "")
     .replace(/[^\p{L}\p{N}]+/gu, "");
   const dictionary = [
-    [/公司|企业|单位/u, "company.name"],
-    [/日期|时间/u, "report.date"],
-    [/姓名|负责人|联系人/u, "person.name"],
-    [/金额|价款|总额/u, "amount"],
-    [/地址|住所/u, "address"]
+    [/(company|\u516C\u53F8|\u4F01\u4E1A|\u5355\u4F4D)/iu, "company.name"],
+    [/(date|\u65E5\u671F|\u65F6\u95F4)/iu, "report.date"],
+    [/(name|owner|person|\u59D3\u540D|\u8D1F\u8D23\u4EBA|\u8054\u7CFB\u4EBA)/iu, "person.name"],
+    [/(amount|\u91D1\u989D|\u4EF7\u6B3E|\u603B\u989D)/iu, "amount"],
+    [/(address|\u5730\u5740|\u4F4F\u6240)/iu, "address"]
   ];
   for (const [pattern, name] of dictionary) {
     if (pattern.test(normalized)) return name;
@@ -917,6 +1169,33 @@ function finalizeFormatAtomStability(formatAtoms, sourcesLength) {
   });
 }
 
+function summarizeAlignment(groups, sourcesLength) {
+  if (sourcesLength <= 1) {
+    return {
+      strategy: "single-source",
+      groups: groups.length,
+      matchedGroups: groups.length,
+      unmatchedGroups: 0,
+      averageScore: 1,
+      lowConfidenceGroups: 0
+    };
+  }
+
+  const matched = groups.filter((group) => new Set(group.blocks.map((block) => block.sourceId)).size === sourcesLength);
+  const scores = matched.map((group) => group.alignment?.score || 0);
+  const averageScore = scores.length
+    ? scores.reduce((sum, score) => sum + score, 0) / scores.length
+    : 0;
+  return {
+    strategy: "anchor-similarity",
+    groups: groups.length,
+    matchedGroups: matched.length,
+    unmatchedGroups: groups.length - matched.length,
+    averageScore: Number(averageScore.toFixed(3)),
+    lowConfidenceGroups: matched.filter((group) => (group.alignment?.score || 0) < alignmentThreshold(group.blocks[0])).length
+  };
+}
+
 async function analyzeDocxInputs(inputDocxPaths) {
   const sources = [];
   for (let index = 0; index < inputDocxPaths.length; index += 1) {
@@ -927,7 +1206,8 @@ async function analyzeDocxInputs(inputDocxPaths) {
 
   const atomMap = new Map();
   const structure = inferStructureAndAtoms(sources, atomMap);
-  const { rules, conflicts, dataFields, arrays } = inferRulesAndConflicts(sources);
+  const groups = groupBlocksForRules(sources);
+  const { rules, conflicts, dataFields, arrays } = inferRulesAndConflicts(sources, groups);
   const profileSignals = sources.flatMap((source) => source.profile.signals.map((signal) => ({
     ...signal,
     sourceId: source.id
@@ -964,7 +1244,8 @@ async function analyzeDocxInputs(inputDocxPaths) {
       fields: Object.keys(dataFields).length,
       arrays: Object.keys(arrays).length,
       profileSignals: profileSignals.length
-    }
+    },
+    alignment: summarizeAlignment(groups, sources.length)
   };
 
   return ir;
@@ -1229,6 +1510,7 @@ export async function analyzeTemplates(inputDocxPaths, options = {}) {
       generatedAt: ir.generatedAt,
       sources: ir.sources,
       summary: ir.summary,
+      alignment: ir.alignment,
       conflicts: ir.conflicts.slice(0, 20),
       profileSignals: ir.profileSignals.slice(0, 20)
     };
