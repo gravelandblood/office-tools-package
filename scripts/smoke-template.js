@@ -194,6 +194,9 @@ async function main() {
   if (compiledOffice.appliedPatches < 3 || !compiledOffice.customXml?.fields || !compiledOffice.customXml?.arrays) {
     throw new Error(`Office-native compile did not apply expected scalar slots and table loops: ${JSON.stringify(compiledOffice, null, 2)}`);
   }
+  if (!compiledOffice.applied.every((item) => typeof item.confidence === "number")) {
+    throw new Error(`Office-native compile should report confidence for applied patches: ${JSON.stringify(compiledOffice, null, 2)}`);
+  }
   const compiledInspected = parseJson(await run(["template", "inspect-format", officeNativeTemplate]));
   if (compiledInspected.profile.counts.paragraphs < 1 || compiledInspected.profile.counts.tables < 1) {
     throw new Error(`Compiled Office-native template lost document structure: ${JSON.stringify(compiledInspected, null, 2)}`);

@@ -147,6 +147,8 @@ Before writing a DOCX, every patch must have an exact Office range:
 
 `template compile-office` may apply scalar slot patches when the dynamic value is isolated in a single safe run. It may apply table loop patches when the baseline table is uniquely located and body rows can be wrapped without changing table properties. It must skip cross-run values, ambiguous loops, conditionals, and conflicts until the IR carries a validated exact range.
 
+Skipped compile targets should carry scored candidates with `kind`, `index`, `confidence`, evidence reasons, text preview, fingerprint, and range. Human or LLM review can feed selected candidates back through `--accept-candidates`; compiled results must mark those as overrides.
+
 Custom behavior should default to an OfficeCLI/OOXML patcher:
 
 - Use OOXML patching for content controls, custom XML parts, data binding, deletion, cloning, and deterministic rendering.

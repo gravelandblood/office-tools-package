@@ -211,28 +211,84 @@ function tableFingerprintFromXml(tableXml) {
   }
 }
 
+function scoreTextLocation(block, evidence, kind) {
+  const preview = evidence.textPreview || "";
+  const expectedFingerprint = evidence.fingerprint || null;
+  const hintedIndex = kind === "table" ? evidence.tableIndex : evidence.paragraphIndex;
+  const text = kind === "table" ? normalizePreviewText(block.text) : block.text;
+  const normalizedPreview = kind === "table" ? normalizePreviewText(preview) : preview;
+  let score = 0;
+  const reasons = [];
+
+  if (Number.isInteger(hintedIndex)) {
+    const distance = Math.abs(block.index - hintedIndex);
+    const indexScore = distance === 0 ? 0.35 : Math.max(0, 0.2 - distance * 0.02);
+    if (indexScore > 0) {
+      score += indexScore;
+      reasons.push(distance === 0 ? "index-exact" : `index-near:${distance}`);
+    }
+  }
+
+  if (normalizedPreview && text === normalizedPreview) {
+    score += 0.35;
+    reasons.push("text-exact");
+  } else if (normalizedPreview && text.includes(normalizedPreview)) {
+    score += 0.28;
+    reasons.push("text-preview");
+  }
+
+  if (expectedFingerprint && block.fingerprint === expectedFingerprint) {
+    score += 0.3;
+    reasons.push("fingerprint");
+  }
+
+  return {
+    id: `${kind}.${String(block.index).padStart(4, "0")}`,
+    kind,
+    index: block.index,
+    confidence: Number(Math.min(score, 1).toFixed(3)),
+    reasons,
+    textPreview: block.text.slice(0, 120),
+    fingerprint: block.fingerprint || null,
+    range: {
+      start: block.start,
+      end: block.end
+    }
+  };
+}
+
 function locateParagraphBlock(xml, evidence) {
   const blocks = paragraphBlocksFromXml(xml).map((block) => ({
     ...block,
     fingerprint: paragraphFingerprintFromXml(block.xml)
   }));
-  const preview = evidence.textPreview || "";
-  const expectedFingerprint = evidence.fingerprint || null;
-  const hinted = Number.isInteger(evidence.paragraphIndex) ? blocks[evidence.paragraphIndex] : null;
-  if (hinted && hinted.text === preview && (!expectedFingerprint || hinted.fingerprint === expectedFingerprint)) {
-    return hinted;
+  const candidates = blocks
+    .map((block) => ({ block, evidence: scoreTextLocation(block, evidence, "paragraph") }))
+    .filter((item) => item.evidence.confidence > 0)
+    .sort((left, right) => right.evidence.confidence - left.evidence.confidence || left.block.index - right.block.index);
+  const best = candidates[0] || null;
+  const runnerUp = candidates[1] || null;
+  const unique = best && (!runnerUp || best.evidence.confidence - runnerUp.evidence.confidence >= 0.2);
+  return {
+    block: unique && best.evidence.confidence >= 0.7 ? best.block : null,
+    candidates: candidates.slice(0, 5).map((item) => item.evidence),
+    confidence: best?.evidence.confidence || 0,
+    ambiguous: Boolean(best && !unique)
+  };
+}
+
+function blockAtIndex(xml, kind, index) {
+  if (!Number.isInteger(index)) return null;
+  if (kind === "table") {
+    return tableBlocksFromXml(xml).map((block) => ({
+      ...block,
+      fingerprint: tableFingerprintFromXml(block.xml)
+    }))[index] || null;
   }
-
-  const exact = blocks.filter((block) => (
-    block.text === preview && (!expectedFingerprint || block.fingerprint === expectedFingerprint)
-  ));
-  if (exact.length === 1) return exact[0];
-
-  const byFingerprint = expectedFingerprint ? blocks.filter((block) => block.fingerprint === expectedFingerprint) : [];
-  const byFingerprintAndText = byFingerprint.filter((block) => block.text === preview);
-  if (byFingerprintAndText.length === 1) return byFingerprintAndText[0];
-
-  return null;
+  return paragraphBlocksFromXml(xml).map((block) => ({
+    ...block,
+    fingerprint: paragraphFingerprintFromXml(block.xml)
+  }))[index] || null;
 }
 
 function normalizePreviewText(text) {
@@ -244,24 +300,19 @@ function locateTableBlock(xml, evidence) {
     ...block,
     fingerprint: tableFingerprintFromXml(block.xml)
   }));
-  const preview = normalizePreviewText(evidence.textPreview || "");
-  const expectedFingerprint = evidence.fingerprint || null;
-  const hinted = Number.isInteger(evidence.tableIndex) ? blocks[evidence.tableIndex] : null;
-  if (hinted && normalizePreviewText(hinted.text).includes(preview)) {
-    return hinted;
-  }
-
-  const exact = blocks.filter((block) => (
-    normalizePreviewText(block.text).includes(preview)
-    && (!expectedFingerprint || block.fingerprint === expectedFingerprint)
-  ));
-  if (exact.length === 1) return exact[0];
-
-  const byFingerprint = expectedFingerprint ? blocks.filter((block) => block.fingerprint === expectedFingerprint) : [];
-  const byFingerprintAndText = byFingerprint.filter((block) => normalizePreviewText(block.text).includes(preview));
-  if (byFingerprintAndText.length === 1) return byFingerprintAndText[0];
-
-  return null;
+  const candidates = blocks
+    .map((block) => ({ block, evidence: scoreTextLocation(block, evidence, "table") }))
+    .filter((item) => item.evidence.confidence > 0)
+    .sort((left, right) => right.evidence.confidence - left.evidence.confidence || left.block.index - right.block.index);
+  const best = candidates[0] || null;
+  const runnerUp = candidates[1] || null;
+  const unique = best && (!runnerUp || best.evidence.confidence - runnerUp.evidence.confidence >= 0.2);
+  return {
+    block: unique && best.evidence.confidence >= 0.55 ? best.block : null,
+    candidates: candidates.slice(0, 5).map((item) => item.evidence),
+    confidence: best?.evidence.confidence || 0,
+    ambiguous: Boolean(best && !unique)
+  };
 }
 
 function hasUnsupportedRangeMarkup(xml) {
@@ -372,15 +423,23 @@ function findSingleRunForWholeParagraphValue(paragraphXml, value) {
   return null;
 }
 
-function compileSlotPatchIntoPart(xml, patch) {
+function compileSlotPatchIntoPart(xml, patch, override = null) {
   const evidence = Array.isArray(patch.evidence) ? patch.evidence.find((item) => item.part && Number.isInteger(item.paragraphIndex)) : null;
   if (!evidence || patch.ruleKind !== "slot" || !patch.contentControl) {
     return { xml, applied: false, reason: "patch is not a paragraph slot with evidence" };
   }
 
-  const paragraph = locateParagraphBlock(xml, evidence);
+  const location = locateParagraphBlock(xml, evidence);
+  const overrideBlock = override?.kind === "paragraph" ? blockAtIndex(xml, "paragraph", override.index) : null;
+  const paragraph = overrideBlock || location.block;
   if (!paragraph) {
-    return { xml, applied: false, reason: "target paragraph was not found by text and fingerprint" };
+    return {
+      xml,
+      applied: false,
+      reason: location.ambiguous ? "target paragraph is ambiguous" : "target paragraph was not found by text and fingerprint",
+      confidence: overrideBlock ? override.confidence ?? location.confidence : location.confidence,
+      candidates: location.candidates
+    };
   }
 
   const label = patch.label || null;
@@ -390,34 +449,51 @@ function compileSlotPatchIntoPart(xml, patch) {
     ? findSingleRunForLabelValue(paragraph.xml, label, value)
     : findSingleRunForWholeParagraphValue(paragraph.xml, preview);
   if (!run) {
-    return { xml, applied: false, reason: "slot value is not isolated in one safe run" };
+    return {
+      xml,
+      applied: false,
+      reason: "slot value is not isolated in one safe run",
+      confidence: overrideBlock ? override.confidence ?? location.confidence : location.confidence,
+      candidates: location.candidates
+    };
   }
 
   const wrappedParagraph = `${paragraph.xml.slice(0, run.start)}${wrapRunWithContentControl(run.xml, patch)}${paragraph.xml.slice(run.end)}`;
   return {
     xml: `${xml.slice(0, paragraph.start)}${wrappedParagraph}${xml.slice(paragraph.end)}`,
     applied: true,
+    confidence: overrideBlock ? override.confidence ?? location.confidence : location.confidence,
+    candidates: location.candidates,
+    overrideApplied: Boolean(overrideBlock),
     reason: "wrapped value run with plain-text content control"
   };
 }
 
-function compileLoopPatchIntoPart(xml, patch) {
+function compileLoopPatchIntoPart(xml, patch, override = null) {
   const evidence = Array.isArray(patch.evidence) ? patch.evidence.find((item) => item.part && Number.isInteger(item.tableIndex)) : null;
   if (!evidence || patch.ruleKind !== "loop" || !patch.contentControl) {
     return { xml, applied: false, reason: "patch is not a table loop with evidence" };
   }
 
-  const table = locateTableBlock(xml, evidence);
+  const location = locateTableBlock(xml, evidence);
+  const overrideBlock = override?.kind === "table" ? blockAtIndex(xml, "table", override.index) : null;
+  const table = overrideBlock || location.block;
   if (!table) {
-    return { xml, applied: false, reason: "target table was not found by text and fingerprint" };
+    return {
+      xml,
+      applied: false,
+      reason: location.ambiguous ? "target table is ambiguous" : "target table was not found by text and fingerprint",
+      confidence: overrideBlock ? override.confidence ?? location.confidence : location.confidence,
+      candidates: location.candidates
+    };
   }
   if (hasUnsupportedRangeMarkup(table.xml)) {
-    return { xml, applied: false, reason: "target table already contains unsupported range markup" };
+    return { xml, applied: false, reason: "target table already contains unsupported range markup", confidence: overrideBlock ? override.confidence ?? location.confidence : location.confidence, candidates: location.candidates };
   }
 
   const rows = rowBlocksFromTableXml(table.xml);
   if (rows.length < 2) {
-    return { xml, applied: false, reason: "table does not have a header row and repeatable body rows" };
+    return { xml, applied: false, reason: "table does not have a header row and repeatable body rows", confidence: overrideBlock ? override.confidence ?? location.confidence : location.confidence, candidates: location.candidates };
   }
 
   const bodyRows = rows.slice(1);
@@ -429,6 +505,9 @@ function compileLoopPatchIntoPart(xml, patch) {
   return {
     xml: ensureW15Namespace(`${xml.slice(0, table.start)}${wrappedTable}${xml.slice(table.end)}`),
     applied: true,
+    confidence: overrideBlock ? override.confidence ?? location.confidence : location.confidence,
+    candidates: location.candidates,
+    overrideApplied: Boolean(overrideBlock),
     reason: "wrapped table body rows with repeating section content control"
   };
 }
@@ -562,6 +641,25 @@ async function addCustomXmlPart(zip, patches) {
     fields: bindablePatches.filter((patch) => patch.ruleKind === "slot").length,
     arrays: bindablePatches.filter((patch) => patch.ruleKind === "loop").length
   };
+}
+
+async function loadCandidateOverrides(options) {
+  const overridePath = options.acceptCandidatesPath || options.acceptCandidates;
+  if (!overridePath) return new Map();
+  const payload = JSON.parse((await fs.readFile(overridePath, "utf8")).replace(/^\uFEFF/u, ""));
+  const items = Array.isArray(payload) ? payload : payload.acceptedCandidates || payload.overrides || [];
+  const overrides = new Map();
+  for (const item of items) {
+    const patchId = item.patchId || item.id;
+    if (!patchId) continue;
+    overrides.set(patchId, {
+      kind: item.kind,
+      index: item.index,
+      confidence: item.confidence,
+      reason: item.reason || "accepted-candidate"
+    });
+  }
+  return overrides;
 }
 
 function textFromXml(xml) {
@@ -2268,6 +2366,7 @@ export async function compileOfficeTemplate(inputDocx, options = {}) {
   const zip = await loadDocx(inputDocx);
   const parts = await readWordParts(zip);
   const byPart = new Map(parts.map((part) => [part.name, part.xml]));
+  const candidateOverrides = await loadCandidateOverrides(options);
   const applied = [];
   const skipped = [];
 
@@ -2285,14 +2384,29 @@ export async function compileOfficeTemplate(inputDocx, options = {}) {
     }
 
     const currentXml = byPart.get(partName);
+    const override = candidateOverrides.get(patch.id) || null;
     const result = patch.ruleKind === "loop"
-      ? compileLoopPatchIntoPart(currentXml, patch)
-      : compileSlotPatchIntoPart(currentXml, patch);
+      ? compileLoopPatchIntoPart(currentXml, patch, override)
+      : compileSlotPatchIntoPart(currentXml, patch, override);
     if (result.applied) {
       byPart.set(partName, result.xml);
-      applied.push({ patchId: patch.id, ruleId: patch.ruleId, part: partName, reason: result.reason });
+      applied.push({
+        patchId: patch.id,
+        ruleId: patch.ruleId,
+        part: partName,
+        confidence: result.confidence,
+        overrideApplied: result.overrideApplied || false,
+        reason: result.reason
+      });
     } else {
-      skipped.push({ patchId: patch.id, ruleId: patch.ruleId, part: partName, reason: result.reason });
+      skipped.push({
+        patchId: patch.id,
+        ruleId: patch.ruleId,
+        part: partName,
+        confidence: result.confidence || 0,
+        candidates: result.candidates || [],
+        reason: result.reason
+      });
     }
   }
 

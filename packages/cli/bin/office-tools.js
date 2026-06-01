@@ -88,6 +88,7 @@ Template options:
   --out-ir <path>                Generated Template Detective IR path.
   --out-plan <path>              Generated Office-native template patch plan path.
   --plan <path>                  Office-native template patch plan path.
+  --accept-candidates <path>     Accepted compile candidates JSON for review-driven Office template compilation.
   --include-text                 Include extracted text in compare output.
 
 Raw WPS UIA options:
@@ -579,6 +580,10 @@ function parseTemplateCompileOffice(argv) {
     switch (arg) {
       case "--plan":
         options.planPath = readOption(argv, i);
+        i += 1;
+        break;
+      case "--accept-candidates":
+        options.acceptCandidatesPath = readOption(argv, i);
         i += 1;
         break;
       case "--out":

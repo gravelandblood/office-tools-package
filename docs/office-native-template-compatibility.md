@@ -73,6 +73,20 @@ node packages/cli/bin/office-tools.js template plan-office template-ir.json --su
 node packages/cli/bin/office-tools.js template compile-office baseline.docx --plan office-plan.json --out template.docx
 ```
 
+低置信或多候选位置不会直接丢弃。`compile-office` 会在 `skipped[].candidates` 中输出候选位置、置信度、命中原因、文本预览和 OOXML range。人或大模型审阅后，可以用 `--accept-candidates` 试编译：
+
+```json
+{
+  "acceptedCandidates": [
+    { "patchId": "patch.0011", "kind": "paragraph", "index": 130, "confidence": 0.81, "reason": "reviewed top candidate" }
+  ]
+}
+```
+
+```powershell
+node packages/cli/bin/office-tools.js template compile-office baseline.docx --plan office-plan.json --accept-candidates accepted-candidates.json --out template.docx
+```
+
 `office-plan.json` 包含：
 
 - `patches`：真正需要应用到 DOCX 的结构补丁计划，例如 content control、repeating section、条件范围标记。
@@ -140,8 +154,9 @@ node packages/cli/bin/office-tools.js template compile-office baseline.docx --pl
 
 - `template plan-office`：生成 Office 原生补丁计划。
 - `template compile-office`：输入 baseline DOCX + office-plan.json，对安全 scalar slot 包 content controls；对能唯一定位的表格 body rows 包 Word repeating section / repeating section item；并写入 custom XML part / relationship / content type。
+- `template compile-office --accept-candidates`：允许人或大模型把 skipped 候选提升为试编译目标，输出中以 `overrideApplied: true` 标记。
 - 烟测覆盖：多样本分析、plan 生成、safe slot 编译、table loop 编译、custom XML 生成、编译后段落/表格结构未丢失。
-- 真实样例回归：历史沿革报告 + 法律尽调报告律师样板中，9 个表格 loop 已全部编译为 repeating section，2 个字段控件编译成功，3 个字段因证据不足无法唯一定位而跳过。
+- 真实样例回归：历史沿革报告 + 法律尽调报告律师样板中，9 个表格 loop 自动编译为 repeating section；字段候选会输出置信度和候选列表，审阅后可通过 accepted candidates 试编译。
 
 仍然保守跳过：
 
