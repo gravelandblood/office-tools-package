@@ -43,6 +43,10 @@ Template note:
 - Ambiguous compile targets should be returned as scored candidates. A human
   or LLM can review them and pass an accepted-candidates JSON file back to
   `template compile-office --accept-candidates` for fast trial rendering.
+- `template render-office` completes the deterministic loop for compiled
+  Office-native templates: scalar content controls are replaced from JSON,
+  repeating section table rows are cloned from array data, and custom XML is
+  updated in the package.
 - Sidecar rules for conditions and complex loops should be applied by a
   deterministic OOXML patcher, then verified with `template compare-format`.
 - Use WPS/Word COM or JSAPI only when real application behavior is required:

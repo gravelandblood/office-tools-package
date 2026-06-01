@@ -73,6 +73,14 @@ node packages/cli/bin/office-tools.js template plan-office template-ir.json --su
 node packages/cli/bin/office-tools.js template compile-office baseline.docx --plan office-plan.json --out template.docx
 ```
 
+用结构化数据渲染 Office 原生模板：
+
+```powershell
+node packages/cli/bin/office-tools.js template render-office template.docx --data data.json --out rendered.docx
+```
+
+`render-office` 会读取 `ot-field:*` 和 `ot-repeat:*` content controls。字段控件会替换其文本内容；重复区控件会克隆模板表格行并填入数组数据，同时更新 custom XML part。
+
 低置信或多候选位置不会直接丢弃。`compile-office` 会在 `skipped[].candidates` 中输出候选位置、置信度、命中原因、文本预览和 OOXML range。人或大模型审阅后，可以用 `--accept-candidates` 试编译：
 
 ```json
@@ -155,7 +163,8 @@ node packages/cli/bin/office-tools.js template compile-office baseline.docx --pl
 - `template plan-office`：生成 Office 原生补丁计划。
 - `template compile-office`：输入 baseline DOCX + office-plan.json，对安全 scalar slot 包 content controls；对能唯一定位的表格 body rows 包 Word repeating section / repeating section item；并写入 custom XML part / relationship / content type。
 - `template compile-office --accept-candidates`：允许人或大模型把 skipped 候选提升为试编译目标，输出中以 `overrideApplied: true` 标记。
-- 烟测覆盖：多样本分析、plan 生成、safe slot 编译、table loop 编译、custom XML 生成、编译后段落/表格结构未丢失。
+- `template render-office`：渲染 Office-native content controls，支持 scalar field 替换和表格 repeating section 行克隆。
+- 烟测覆盖：多样本分析、plan 生成、safe slot 编译、table loop 编译、custom XML 生成、Office-native 渲染、编译后段落/表格结构未丢失。
 - 真实样例回归：历史沿革报告 + 法律尽调报告律师样板中，9 个表格 loop 自动编译为 repeating section；字段候选会输出置信度和候选列表，审阅后可通过 accepted candidates 试编译。
 
 仍然保守跳过：
@@ -165,5 +174,6 @@ node packages/cli/bin/office-tools.js template compile-office baseline.docx --pl
 - 无法由 tableIndex + 表格预览唯一定位的表格循环。
 - 条件块的实际删除/保留渲染。
 - unresolved conflict 的自动裁决。
+- 表格列语义命名和对象数组字段映射仍较朴素；当前按数组顺序或对象值顺序填入单元格。
 
 注意：不能在当前 IR 只定位到段落/表格块时贸然写入 DOCX。例如 `公司名称：某某公司` 这种字段，原生 content control 应包住冒号后的 value，而不是把整个段落含 label 都变成可替换字段。因此 `plan-office` 会为每个 patch 输出 `compileReadiness`，只有定位到 exact run/text-node/table-row/block range 后，patcher 才能实际修改 DOCX。

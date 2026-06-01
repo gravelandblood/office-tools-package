@@ -54,6 +54,10 @@ export const capabilities = {
     {
       id: "template.compileOffice",
       description: "Compile safe Office-native template patches into a DOCX using content controls and custom XML parts."
+    },
+    {
+      id: "template.renderOffice",
+      description: "Render an Office-native template compiled by template.compileOffice using content controls, repeating sections, and JSON data."
     }
   ]
 };
@@ -155,6 +159,182 @@ function renderXml(xml, data) {
     const nextAttrs = attrs.includes("xml:space=") ? attrs : `${attrs} xml:space="preserve"`;
     return `<w:t${nextAttrs}>${escapeXml(rendered)}</w:t>`;
   });
+}
+
+function getByPath(data, fieldPath) {
+  const normalized = String(fieldPath || "").replace(/\[(\d+)\]/gu, ".$1");
+  const direct = data?.[fieldPath];
+  if (direct !== undefined) return direct;
+  const parts = normalized.split(".").filter(Boolean);
+  let cursor = data;
+  for (const part of parts) {
+    if (cursor === undefined || cursor === null) return undefined;
+    cursor = cursor[part];
+  }
+  return cursor;
+}
+
+function setTextInFirstTextNode(xml, value) {
+  let replaced = false;
+  return xml.replace(TEXT_NODE_RE, (full, attrs) => {
+    if (replaced) return full;
+    replaced = true;
+    const nextAttrs = attrs.includes("xml:space=") ? attrs : `${attrs} xml:space="preserve"`;
+    return `<w:t${nextAttrs}>${escapeXml(value === undefined || value === null ? "" : String(value))}</w:t>`;
+  });
+}
+
+function clearFollowingTextNodes(xml) {
+  let seen = false;
+  return xml.replace(TEXT_NODE_RE, (full, attrs) => {
+    if (!seen) {
+      seen = true;
+      return full;
+    }
+    const nextAttrs = attrs.includes("xml:space=") ? attrs : `${attrs} xml:space="preserve"`;
+    return `<w:t${nextAttrs}></w:t>`;
+  });
+}
+
+function contentControlBlocksFromXml(xml) {
+  const blocks = [];
+  const openRe = /<w:sdt\b/gu;
+  for (const match of xml.matchAll(openRe)) {
+    const start = match.index;
+    let depth = 0;
+    const tagRe = /<\/?w:sdt\b[^>]*>/gu;
+    tagRe.lastIndex = start;
+    let end = -1;
+    for (const tag of xml.matchAll(tagRe)) {
+      const isClose = tag[0].startsWith("</");
+      depth += isClose ? -1 : 1;
+      if (depth === 0) {
+        end = tag.index + tag[0].length;
+        break;
+      }
+    }
+    if (end > start) {
+      blocks.push({
+        start,
+        end,
+        xml: xml.slice(start, end)
+      });
+    }
+  }
+  return blocks;
+}
+
+function contentControlTagValue(sdtXml) {
+  const match = sdtXml.match(/<w:tag\b[^>]*\bw:val="([^"]*)"/u);
+  return match ? decodeXmlText(match[1]) : null;
+}
+
+function outerSdtContentRange(sdtXml) {
+  const openMatch = sdtXml.match(/<w:sdtContent\b[^>]*>/u);
+  const close = "</w:sdtContent>";
+  const closeStart = sdtXml.lastIndexOf(close);
+  if (!openMatch || closeStart < 0 || closeStart < openMatch.index) return null;
+  return {
+    openStart: openMatch.index,
+    contentStart: openMatch.index + openMatch[0].length,
+    contentEnd: closeStart,
+    closeEnd: closeStart + close.length
+  };
+}
+
+function replaceOuterSdtContent(sdtXml, nextContent) {
+  const range = outerSdtContentRange(sdtXml);
+  if (!range) return null;
+  return `${sdtXml.slice(0, range.contentStart)}${nextContent}${sdtXml.slice(range.contentEnd)}`;
+}
+
+function renderFieldContentControl(sdtXml, fieldPath, data) {
+  const value = getByPath(data, fieldPath);
+  if (value === undefined) return { xml: sdtXml, rendered: false };
+  const range = outerSdtContentRange(sdtXml);
+  if (!range) return { xml: sdtXml, rendered: false };
+  const content = sdtXml.slice(range.contentStart, range.contentEnd);
+  const nextContent = clearFollowingTextNodes(setTextInFirstTextNode(content, value));
+  const nextXml = replaceOuterSdtContent(sdtXml, nextContent);
+  if (!nextXml) return { xml: sdtXml, rendered: false };
+  return {
+    xml: nextXml,
+    rendered: true
+  };
+}
+
+function rowCellBlocks(rowXml) {
+  const cells = [];
+  const re = /<w:tc\b[\s\S]*?<\/w:tc>/gu;
+  for (const match of rowXml.matchAll(re)) {
+    cells.push({
+      start: match.index,
+      end: match.index + match[0].length,
+      xml: match[0]
+    });
+  }
+  return cells;
+}
+
+function renderRowFromData(rowXml, rowData) {
+  const values = Array.isArray(rowData)
+    ? rowData
+    : rowData && typeof rowData === "object"
+      ? Object.values(rowData)
+      : [rowData];
+  const cells = rowCellBlocks(rowXml);
+  if (!cells.length) return rowXml;
+  let out = "";
+  let cursor = 0;
+  for (let index = 0; index < cells.length; index += 1) {
+    const cell = cells[index];
+    out += rowXml.slice(cursor, cell.start);
+    const value = values[index] === undefined ? "" : values[index];
+    out += clearFollowingTextNodes(setTextInFirstTextNode(cell.xml, value));
+    cursor = cell.end;
+  }
+  out += rowXml.slice(cursor);
+  return out;
+}
+
+function renderRepeatContentControl(sdtXml, arrayPath, data) {
+  const rows = getByPath(data, arrayPath);
+  if (!Array.isArray(rows)) return { xml: sdtXml, rendered: false };
+  const range = outerSdtContentRange(sdtXml);
+  if (!range) return { xml: sdtXml, rendered: false };
+  const content = sdtXml.slice(range.contentStart, range.contentEnd);
+  const rowMatches = Array.from(content.matchAll(/<w:tr\b[\s\S]*?<\/w:tr>/gu));
+  if (!rowMatches.length) return { xml: sdtXml, rendered: false };
+  const templateRow = rowMatches[0][0];
+  const renderedRows = rows.map((row) => renderRowFromData(templateRow, row)).join("");
+  const nextXml = replaceOuterSdtContent(sdtXml, renderedRows);
+  if (!nextXml) return { xml: sdtXml, rendered: false };
+  return {
+    xml: nextXml,
+    rendered: true
+  };
+}
+
+function renderOfficeXml(xml, data) {
+  const controls = contentControlBlocksFromXml(xml).sort((left, right) => right.start - left.start);
+  let nextXml = xml;
+  const rendered = [];
+  for (const control of controls) {
+    const current = nextXml.slice(control.start, control.end);
+    const tag = contentControlTagValue(current);
+    if (!tag) continue;
+    let result = null;
+    if (tag.startsWith("ot-field:")) {
+      result = renderFieldContentControl(current, tag.slice("ot-field:".length), data);
+    } else if (tag.startsWith("ot-repeat:")) {
+      result = renderRepeatContentControl(current, tag.slice("ot-repeat:".length), data);
+    }
+    if (result?.rendered) {
+      nextXml = `${nextXml.slice(0, control.start)}${result.xml}${nextXml.slice(control.end)}`;
+      rendered.push({ tag, start: control.start, end: control.end });
+    }
+  }
+  return { xml: nextXml, rendered };
 }
 
 function paragraphBlocksFromXml(xml) {
@@ -562,6 +742,30 @@ function buildCustomXmlData(patches) {
     setDeepXmlValue(root, segments, patchInitialValue(patch));
   }
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<template><data>${Array.from(root.children.entries()).map(([name, node]) => xmlTreeToString(name, node)).join("")}</data></template>`;
+}
+
+function buildCustomXmlDataFromPayload(data) {
+  const root = { children: new Map(), value: "" };
+  function visit(value, segments) {
+    if (Array.isArray(value)) {
+      value.forEach((item, index) => visit(item, [...segments, String(index)]));
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) visit(item, [...segments, key]);
+      return;
+    }
+    setDeepXmlValue(root, segments, value === undefined || value === null ? "" : String(value));
+  }
+  visit(data, []);
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<template><data>${Array.from(root.children.entries()).map(([name, node]) => xmlTreeToString(name, node)).join("")}</data></template>`;
+}
+
+function updateOfficeTemplateCustomXml(zip, data) {
+  const itemPath = Object.keys(zip.files).find((name) => /^customXml\/item\d+\.xml$/u.test(name));
+  if (!itemPath) return null;
+  zip.file(itemPath, buildCustomXmlDataFromPayload(data));
+  return itemPath;
 }
 
 function nextCustomXmlIndex(zip) {
@@ -2523,6 +2727,42 @@ export async function renderTemplate(templateDocx, options = {}) {
     template: path.resolve(templateDocx),
     data: path.resolve(dataPath),
     output: path.resolve(outputPath),
+    profileFingerprint: profile.packageFingerprint
+  };
+}
+
+export async function renderOfficeTemplate(templateDocx, options = {}) {
+  const dataPath = options.dataPath || options.data;
+  const outputPath = options.outputPath || options.out;
+  if (!dataPath || !outputPath) {
+    throw new Error("template render-office requires --data and --out");
+  }
+
+  const payload = JSON.parse((await fs.readFile(dataPath, "utf8")).replace(/^\uFEFF/u, ""));
+  const data = payload.fields || payload.data || payload;
+  const zip = await loadDocx(templateDocx);
+  const parts = await readWordParts(zip);
+  const renderedControls = [];
+  for (const part of parts) {
+    const rendered = renderOfficeXml(part.xml, data);
+    if (rendered.rendered.length) {
+      zip.file(part.name, rendered.xml);
+      renderedControls.push(...rendered.rendered.map((item) => ({ ...item, part: part.name })));
+    }
+  }
+  const customXmlPart = updateOfficeTemplateCustomXml(zip, data);
+  await writeDocx(zip, outputPath);
+  const profile = await inspectZip(zip);
+
+  return {
+    ok: true,
+    command: "template.renderOffice",
+    template: path.resolve(templateDocx),
+    data: path.resolve(dataPath),
+    output: path.resolve(outputPath),
+    renderedControls: renderedControls.length,
+    controls: renderedControls,
+    customXmlPart,
     profileFingerprint: profile.packageFingerprint
   };
 }

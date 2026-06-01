@@ -8,6 +8,7 @@ import {
   inferFormatTemplate,
   inspectFormat,
   planOfficeTemplate,
+  renderOfficeTemplate,
   profileDocx,
   renderTemplate
 } from "@office-tools/backend-template";
@@ -47,6 +48,7 @@ Usage:
   office-tools template analyze <input.docx...> [options]
   office-tools template plan-office <template-ir.json> [options]
   office-tools template compile-office <input.docx> --plan <office-plan.json> --out <template.docx>
+  office-tools template render-office <template.docx> --data <data.json> --out <output.docx>
   office-tools template infer-format <input.docx> --out-template <template.docx> --out-data <data.json> --out-profile <profile.json>
   office-tools template render <template.docx> --data <data.json> --out <output.docx>
   office-tools template compare-format <left.docx> <right.docx> [options]
@@ -732,6 +734,12 @@ async function main() {
   if (domain === "template" && command === "compile-office") {
     const { input, options } = parseTemplateCompileOffice([subcommand, ...rest]);
     printJson(await compileOfficeTemplate(input, options));
+    return;
+  }
+
+  if (domain === "template" && command === "render-office") {
+    const { input, options } = parseTemplateRender([subcommand, ...rest]);
+    printJson(await renderOfficeTemplate(input, options));
     return;
   }
 

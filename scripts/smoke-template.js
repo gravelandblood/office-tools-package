@@ -132,6 +132,8 @@ async function main() {
   const detectiveIrMulti = path.join(tempDir, "detective-ir-multi.json");
   const officePlan = path.join(tempDir, "office-plan.json");
   const officeNativeTemplate = path.join(tempDir, "office-native-template.docx");
+  const officeNativeData = path.join(tempDir, "office-native-data.json");
+  const officeNativeRendered = path.join(tempDir, "office-native-rendered.docx");
   const rendered = path.join(tempDir, "rendered.docx");
 
   await writeSampleDocx(sample);
@@ -200,6 +202,30 @@ async function main() {
   const compiledInspected = parseJson(await run(["template", "inspect-format", officeNativeTemplate]));
   if (compiledInspected.profile.counts.paragraphs < 1 || compiledInspected.profile.counts.tables < 1) {
     throw new Error(`Compiled Office-native template lost document structure: ${JSON.stringify(compiledInspected, null, 2)}`);
+  }
+  await fs.writeFile(officeNativeData, `${JSON.stringify({
+    company: { name: "Rendered Global Holdings Ltd." },
+    report: { date: "2026-08-20" },
+    field: { "003": "Rendered conclusion from Office-native controls." },
+    table001: {
+      rows: [
+        ["Rendered Contract", "Dana", "Open"],
+        ["Rendered Finance", "Evan", "Closed"]
+      ]
+    }
+  }, null, 2)}\n`, "utf8");
+  const officeRendered = parseJson(await run([
+    "template", "render-office", officeNativeTemplate,
+    "--data", officeNativeData,
+    "--out", officeNativeRendered
+  ]));
+  if (officeRendered.renderedControls < 4) {
+    throw new Error(`Office-native render did not render expected controls: ${JSON.stringify(officeRendered, null, 2)}`);
+  }
+  const officeRenderedCompared = parseJson(await run(["template", "compare-format", officeNativeTemplate, officeNativeRendered, "--include-text"]));
+  if (!officeRenderedCompared.rightText.includes("Rendered Global Holdings Ltd.")
+    || !officeRenderedCompared.rightText.includes("Rendered Finance")) {
+    throw new Error(`Office-native render output missing rendered data: ${JSON.stringify(officeRenderedCompared, null, 2)}`);
   }
 
   const inferred = parseJson(await run([
